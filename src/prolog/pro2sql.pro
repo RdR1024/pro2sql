@@ -5,18 +5,9 @@
     args_sql/4,
     pro2sql/2,
     nondot_str/2,
-    concat_to_atom/3
+    concat_to_atom/3,
+    load_csv/2
 ]).
-
-:- module_transparent 
-    head_sql/3,
-    clauses_sql/7,
-    clause_sql/7,
-    args_sql/4,
-    pro2sql/2,
-    nondot_str/2,
-    concat_to_atom/3.
-
 
 /** <module> Lightweight Prolog to SQL compiler
 
@@ -32,13 +23,16 @@ This module is a minimal compiler of prolog query predicates to sql SELECT state
 * Can use constraints like Age > 16, etc.
 * Can do "joins" through shared variable names between predicates
 * `member/2` translates to X IN List
-* Can use SWI-Prolog `between/3` 
+* Can use SWI-Prolog `between/3`
+* No LIKE, but instead REGEXP_MATCH  (used in Google SQL)
 
 The aim is that a "query predicate" (a prolog predicate intended to retrieve records from fact predicates) works the same in prolog as in SQL -- except that SQL returns a table, where prolog returns variable result alternatives. The use case is where you want to extract from a database through SQL and then further query results table in Prolog.
 
 # Notes
 * field names are always translated with the table name as prefix. We also use this to determine if an atom in a constraint (e.g. `'mytable.person' = jones`) should be translated as a string (e.g. "jones"). This method is not perfect -- there could be atoms that contain full-stops (periods) that _should_ be translated as a string.  Therefore, the recommendation is to store string values as strings in Prolog.
-* TODO: use SWI-Prolog's regular expressions to implement LIKE
+* TODO:
+    - Add a utility to query BigQuery and load the results
+    - allow aggregate functions and create an aggregation predicate that processes them in for Prolog
 
 # Installation
 For the moment, just copy the file `src\prolog\pro2sql.pro`, or clone the git repo and copy it locally.
@@ -50,6 +44,19 @@ I will create a SWI-Prolog package when I've finished my current TODO list.
 [1] "Draxler C (1992) Prolog to SQL Compiler, version 1.0. Technical report, CIS Centre for Information and Speech, University of Munich"
 
 **/
+:- use_module('./file_path_name_ext.pro').
+
+:- module_transparent 
+    head_sql/3,
+    clauses_sql/7,
+    clause_sql/7,
+    args_sql/4,
+    pro2sql/2,
+    nondot_str/2,
+    concat_to_atom/3,
+    load_csv/2.
+
+
 
 %%  table_def(+TableName,+FieldList,+Options) is multi.
 %   Defines the table name and field names of an SQL table. `TableName` should match
@@ -60,7 +67,7 @@ I will create a SWI-Prolog package when I've finished my current TODO list.
 %   Example. Note: we're using `assert` here from the prolog prompt, but `table_def/3` can 
 %   be asserted from a prolog file like any other predicate.
 %   ~~~
-%   :- assert(table_def(person,[id,name,age],[prefix-myproj,table-'people'])).
+%   :- assert(table_def(person,[id,name,age],[prefix(tiny),table(people)])).
 %   ~~~
 %
 %   @arg TableName      Atom that matches the predicate name, representing an SQL table, or a fact in Prolog.
@@ -74,18 +81,18 @@ I will create a SWI-Prolog package when I've finished my current TODO list.
 %
 %   Example
 %   ~~~
-%   :- assert(table_def(person,[id,name,age],[prefix-myproj,table-'people'])).
+%   :- assert(table_def(person,[id,name,age],[prefix(tiny),table(people)])).
 %   :- assert( (adults(Name,Age):- person(_,Name,Age), Age >=21) ).
 %   :- pro2sql(adults(Name,Age), SQL).
 %   Name = 'people.name',
 %   Age = 'people.age',
-%   SQL = 'SELECT Name, Age FROM myproj.people WHERE people.age >= 21'
+%   SQL = 'SELECT people.name,people.age FROM tiny.people WHERE people.age >= 21'
 %
 %   :- assert( (teens(Name,Age):- person(_,Name,Age), between(16,21,Age), \+ member(Name,[john,jane])) ).
 %   :- pro2sql(teens(Name,Age),SQL).
 %   Name = 'people.name',
 %   Age = 'people.age',
-%   SQL = 'SELECT people.name,people.age FROM myproj.people WHERE people.age BETWEEN 16 AND 21 AND NOT ( people.name IN ("john","jane") )' .
+%   SQL = 'SELECT people.name,people.age FROM tiny.people WHERE people.age BETWEEN 16 AND 21 AND NOT ( people.name IN ("john","jane") )' .
 %   ~~~
 %
 %   @arg Head   Predicate head clause of the predicate to translate into SQL
@@ -129,15 +136,15 @@ head_sql(Head,Select^ST,Select^NST):-
 %
 %   Example
 %   ~~~
-%   :- assert(table_def(person,[id,name,age],[prefix-myproj,table-'people'])).
-%   :- assert(table_def(employee,[name,company],[prefix-myproj])).
+%   :- assert(table_def(person,[id,name,age],[prefix(tiny),table(people)])).
+%   :- assert(table_def(employee,[name,company],[prefix(tiny)])).
 %   :- clauses_sql((person(_,Name,Age),employee(Name,Company)),[Name,Age,Company|ST]^ST,F^F,W^W, Select^NST,From^NFT,Where^NWT).
 %
 %   :- clauses_sql((person(_,Name,Age),Age >= 16),[Name,Age|ST]^ST,F^F,W^W,Select^NST,From^NFT,Where^NWT).
 %   Name = 'people.name',
 %   Age = 'people.age',
 %   ST = NST,
-%   F = From, From = ['myproj.people'|NFT],
+%   F = From, From = ['tiny.people'|NFT],
 %   W = Where, Where = ['people.age'>=16|NWT],
 %   Select = ['people.name', 'people.age'|NST] .
 %   ~~~
@@ -180,13 +187,13 @@ clauses_sql(Clause,S^ST,F^FT,W^WT,Select^NST,From^NFT,Where^NWT):-
 %
 %   Example
 %   ~~~
-%   :- assert(table_def(person,[id,name,age],[prefix-myproj,table-'people'])).
+%   :- assert(table_def(person,[id,name,age],[prefix(tiny),table(people)])).
 %   :- clause_sql(person(_,Name,Age),[Name,Age|ST]^ST,F^F,W^W,Select^NST,From^NFT,Where^NWT).
 %   NST,From^NFT,Where^NWT).
 %   Name = 'people.name',
 %   Age = 'people.age',
 %   ST = NST,
-%   F = From, From = ['myproj.people'|NFT],
+%   F = From, From = ['tiny.people'|NFT],
 %   W = Where, Where = NWT, NWT = [],
 %   Select = ['people.name', 'people.age'|NST] .   
 %   ~~~
@@ -204,8 +211,8 @@ clause_sql(Clause,Select^ST,From^FT,Where^WT,Select^ST,From^NFT,Where^NWT):-
     Clause =.. [Func|Args],
     context_module(M),
     M:table_def(Func,Fields,Options),
-    ( member(prefix-Pref,Options) -> true; Pref='' ),
-    ( member(table-Tab,Options) -> true; Tab=Func),
+    ( member(prefix(Pref),Options) -> true; Pref='' ),
+    ( member(table(Tab),Options) -> true; Tab=Func),
     ( Pref = '' -> Table=Tab; atomic_list_concat([Pref,'.',Tab],Table)),
     append([Table],NFT,FT),
     args_sql(Tab,Fields,Args,Wh),
@@ -228,11 +235,10 @@ clause_sql(Clause,S^ST,F^FT,Where^WT,S^ST,F^FT,Where^NWT):-
     format(atom(NewClause),'~w BETWEEN ~w AND ~w',[Value,Low,High]),
     append([NewClause],NWT,WT).
 
-%   re_match constraint clause. ('LIKE' for SQL)
+%   re_match constraint clause. 
 clause_sql(Clause,S^ST,F^FT,Where^WT,S^ST,F^FT,Where^NWT):-
     Clause =.. [re_match,Arg1,Arg2],
-    rematch_sql(A1,Arg1,_),
-    format(atom(NewClause),'~w LIKE ~w',[Arg2,A1]),
+    format(atom(NewClause),'REGEXP-MATCH (~w, r\'~w\')',[Arg2,Arg1]),
     append([NewClause],NWT,WT).
 
 %   A comparative constraint clause.
@@ -311,20 +317,49 @@ concat_to_atom([A|As],Sep,Current,Result):-
     format(atom(Temp),'~w~w~k',[Current,Sep,A]),
     concat_to_atom(As,Sep,Temp,Result).
 
-%%  rematch_sql(+RegExp,-SQLexp) is semidet.
-%%  rematch_sql(-SQLexp,+RegExp,_) is semidet.
-%   Translate regular expression to SQL LIKE pattern.
-%   Note that only part of regex is translatable
+%%  load_csv(+File,+Options) is semidet.
+%   Load the contents of a headerless csv file into the prolog database
+%   as clauses of the functor specified in `Options`.
 %
-%   Example
+%   Example (assumes existence of a file `people.csv`)
 %   ~~~
-%   :- rematch_sql(".*doe",SQL).
-%   SQL = '%doe'
+%   :- load_csv('people.csv',[functor(person),prefix(tiny),table(people),fields([id,name,age])]).
+%   :- table_def(person,Fields,Options).
+%   Fields = [id,name,age]
+%   Options = [prefix(tiny),table(people)] .
 %
-%   :- rematch_sql("..%",SQL).
-%   SQL = '__^%\'ESCAPE\'^\''
+%   :- person(ID,Name,Age).
+%   ID = 1
+%   Name = john
+%   Age = 13 .
 %   ~~~
 %
-%   @arg SQLexp     resulting SQL pattern as used in LIKE
-%   @arg RegExp     reqular expression pattern used in e.g. `re_match/2`
-%   @arg _          the remainder of the RegExp after processing (ignored)
+%   @arg File       The csv file to load
+%   @arg Options    Options that control the fact predicates loaded into Prolog
+load_csv(File,Options):-
+    file_path_name_ext(File,_,FName,_),
+    (member(functor(Func),Options) -> true; Func=FName),
+    (member(table(Table),Options) -> D1=[table(Table)]; D1=[]),
+    (member(prefix(Prefix),Options) -> DefOptions=[prefix(Prefix)|D1]; DefOptions=D1),
+    (member(fields(Fields),Options) -> true; Fields = []),
+    (member(nodef,Options)
+    ->  true
+    ;   (   length(Fields,N),
+            retractall(table_def(Func,_,_)),
+            abolish(Func/N),
+            assert(table_def(Func,Fields,DefOptions)),
+        )
+    ),
+    CSVops=[functor(Func),convert(true)],
+    context_module(M),
+    load_csv_rows(M,File,CSVops),!.
+
+%%  load_csv(+File,+Options) is semidet.
+%   Fail loop to load rows of csv file into the prolog database.
+%   For use with `load_csv/2`.
+
+load_csv_rows(M,Input,CSVOps):-
+    csv_read_file_row(Input,Row,CSVOps),
+    (Row=end_of_file -> true; M:assertz(Row)),
+    fail.
+load_csv_rows(_,_,_):-!.
