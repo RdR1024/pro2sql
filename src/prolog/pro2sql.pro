@@ -1,12 +1,28 @@
-module(pro2sql,[
+:-module(pro2sql,[
     head_sql/3,
     clauses_sql/7,
     clause_sql/7,
     args_sql/4,
-    pro2sql/2
+    pro2sql/2,
+    nondot_str/2,
+    concat_to_atom/3
 ]).
 
+:- module_transparent 
+    head_sql/3,
+    clauses_sql/7,
+    clause_sql/7,
+    args_sql/4,
+    pro2sql/2,
+    nondot_str/2,
+    concat_to_atom/3.
+
+
 /** <module> Lightweight Prolog to SQL compiler
+
+# pro2sql
+
+A lightweight Prolog to SQL SELECT translator.
 
 # Introduction
 This module is a minimal compiler of prolog query predicates to sql SELECT statements. I'm inspired by Draxler's work [1][], but I couldn't access his original paper, and it was too much work trying to use Mungall's implementation without much documentation. It seemed to me that it would be less work to implement a minimalist translator:
@@ -15,11 +31,19 @@ This module is a minimal compiler of prolog query predicates to sql SELECT state
 * No grouping or ordering
 * Can use constraints like Age > 16, etc.
 * Can do "joins" through shared variable names between predicates
+* `member/2` translates to X IN List
+* Can use SWI-Prolog `between/3` 
 
-The aim is that a "query predicate" (a prolog predicate intended to retrieve records from fact predicates) works the same in prolog as its SQL translation works on SQL data -- except that SQL returns a table, where prolog returns variable result alternatives. The use case is where you want to grab an extract from a database through SQL and then further query it in Prolog.
+The aim is that a "query predicate" (a prolog predicate intended to retrieve records from fact predicates) works the same in prolog as in SQL -- except that SQL returns a table, where prolog returns variable result alternatives. The use case is where you want to extract from a database through SQL and then further query results table in Prolog.
 
 # Notes
-* field names are always translated with the table name as prefix. We also use this to determine if an atom in a constraint (e.g. `'mytable.person' = jones`) should be translated as a string (e.g. "jones"). This method is not perfect -- there could be atoms that contain full-stops (periods) that should be translated as string.  Therefore, the recommendation is to store string values as strings in Prolog.
+* field names are always translated with the table name as prefix. We also use this to determine if an atom in a constraint (e.g. `'mytable.person' = jones`) should be translated as a string (e.g. "jones"). This method is not perfect -- there could be atoms that contain full-stops (periods) that _should_ be translated as a string.  Therefore, the recommendation is to store string values as strings in Prolog.
+* TODO: use SWI-Prolog's regular expressions to implement LIKE
+
+# Installation
+For the moment, just copy the file `src\prolog\pro2sql.pro`, or clone the git repo and copy it locally.
+
+I will create a SWI-Prolog package when I've finished my current TODO list.
 
 # References
 
@@ -53,7 +77,15 @@ The aim is that a "query predicate" (a prolog predicate intended to retrieve rec
 %   :- assert(table_def(person,[id,name,age],[prefix-myproj,table-'people'])).
 %   :- assert( (adults(Name,Age):- person(_,Name,Age), Age >=21) ).
 %   :- pro2sql(adults(Name,Age), SQL).
+%   Name = 'people.name',
+%   Age = 'people.age',
 %   SQL = 'SELECT Name, Age FROM myproj.people WHERE people.age >= 21'
+%
+%   :- assert( (teens(Name,Age):- person(_,Name,Age), between(16,21,Age), \+ member(Name,[john,jane])) ).
+%   :- pro2sql(teens(Name,Age),SQL).
+%   Name = 'people.name',
+%   Age = 'people.age',
+%   SQL = 'SELECT people.name,people.age FROM myproj.people WHERE people.age BETWEEN 16 AND 21 AND NOT ( people.name IN ("john","jane") )' .
 %   ~~~
 %
 %   @arg Head   Predicate head clause of the predicate to translate into SQL
@@ -62,7 +94,8 @@ pro2sql(Head,SQL):-
     Head =.. [Func|Args],
     length(Args,N),
     current_predicate(Func/N),
-    clause(Head,Body),
+    context_module(M),
+    M:clause(Head,Body),
     head_sql(Head,S^S,S1^ST),
     clauses_sql(Body,S1^ST,F^F,W^W,Sel^[],Fro^[],Whe^[]),
     atomic_list_concat(Sel,',',Select),
@@ -159,23 +192,18 @@ clauses_sql(Clause,S^ST,F^FT,W^WT,Select^NST,From^NFT,Where^NWT):-
 %   ~~~
 %
 %   @arg Clause     The clause to be translated
-%   @arg S          The initial list of arguments for the SELECT clause
-%   @arg ST         The tail of the S list
-%   @arg F          The initial list of arguments for the FROM clause
-%   @arg FT         The tail of the F list
-%   @arg W          The initial list of arguments for the WHERE clause
-%   @arg WT         The tail of the W list
-%   @arg Select     The resulting list of arguments for the SELECT clause
-%   @arg NST        The tail of the resulting Select list
-%   @arg For        The resulting list of arguments for the FROM clause
-%   @arg NFT        The tail of the resulting For list
-%   @arg Where      The resulting list of arguments for the WHERE clause
-%   @arg NWT        The tail of the Where list
+%   @arg S^ST           Initial difference list of arguments for the SELECT clause
+%   @arg F^FT           Initial difference list of arguments for the FROM clause
+%   @arg W^WT           Initial difference list of arguments for the WHERE clause
+%   @arg Select^NST     Resulting diffence list of arguments for the SELECT clause
+%   @arg From^NFT       Resulting difference list of arguments for the FROM clause
+%   @arg Where^NWT      Resulting difference list of arguments for the WHERE clause
 
 %   A simple predicate clause, where the predicate functor is defined as a table
 clause_sql(Clause,Select^ST,From^FT,Where^WT,Select^ST,From^NFT,Where^NWT):-
     Clause =.. [Func|Args],
-    table_def(Func,Fields,Options),
+    context_module(M),
+    M:table_def(Func,Fields,Options),
     ( member(prefix-Pref,Options) -> true; Pref='' ),
     ( member(table-Tab,Options) -> true; Tab=Func),
     ( Pref = '' -> Table=Tab; atomic_list_concat([Pref,'.',Tab],Table)),
@@ -186,11 +214,25 @@ clause_sql(Clause,Select^ST,From^FT,Where^WT,Select^ST,From^NFT,Where^NWT):-
     ;   append(Wh,NWT,WT)
     ).
 
-%   A constraint clause.
+%   membership constraint clause.
 clause_sql(Clause,S^ST,F^FT,Where^WT,S^ST,F^FT,Where^NWT):-
-    Clause =.. [Op,Arg1,Arg2],
+    Clause =.. [member,Arg1,Arg2],
+    maplist(nondot_str,Arg2,Arg2s),
+    concat_to_atom(Arg2s,',',A2),
+    format(atom(NewClause),'~w IN (~w)',[Arg1,A2]),
+    append([NewClause],NWT,WT).
+
+%   between constraint clause.
+clause_sql(Clause,S^ST,F^FT,Where^WT,S^ST,F^FT,Where^NWT):-
+    Clause =.. [between,Low,High,Value],
+    format(atom(NewClause),'~w BETWEEN ~w AND ~w',[Value,Low,High]),
+    append([NewClause],NWT,WT).
+
+%   A comparative constraint clause.
+clause_sql(Clause,S^ST,F^FT,Where^WT,S^ST,F^FT,Where^NWT):-
+    Clause =.. [Op,Arg1,Arg2], Op\=member, Op\=between,
     member(Op-Sop,['<'-'<','>'-'>','='-'=','=='-'=','>='-'>=','=<'-'<=','\\='-'<>']),
-    ( (atom(Arg2),atomic_list_concat([Arg2],'.',Arg2)) -> atom_string(Arg2,A2); A2=Arg2),
+    nondot_str(Arg2,A2),
     format(atom(NewClause),'~w ~w ~k',[Arg1,Sop,A2]),
     append([NewClause],NWT,WT).
 
@@ -221,9 +263,43 @@ args_sql(Table,[Field|Fs],[Arg|As],Where):-
 args_sql(Table,[F|Fs],[Arg|As],[Field|Where]):-
     nonvar(Arg),
     atomic_list_concat([Table,'.',F],Fld),
-    ( (atom(Arg),atomic_list_concat([Arg],'.',Arg)) -> atom_string(Arg,A); A=Arg),
+    nondot_str(Arg,A),
     format(atom(Field),'~w = ~k',[Fld,A]),!,
     args_sql(Table,Fs,As,Where).
 
 
+%%  nondot_str(+Atom,-Convert) is semidet.
+%   Convert an atom that does not contain a full-stop into a string
+%
+%   Example
+%   ~~~
+%
+%   ~~~
+%
+%   @arg Atom       the atom value
+%   @arg Convert    the resulting atom or string
+nondot_str(Atom,Convert):-
+    ( (atom(Atom),(Atom\=null,Atom\='NULL'),atomic_list_concat([Atom],'.',Atom)) 
+    -> atom_string(Atom,Convert)
+    ; Convert=Atom
+    ).
 
+%%  concat_to_atom(+List,+Sep,-Atom) is semidet.
+%   Like `atomic_list_concat/3` but strings retain quotes.
+%
+%   Example
+%   ~~~
+%   :- concat_to_atom([hello,"John"],' ',Atom).
+%   Atom = 'hello "John"'
+%   ~~~
+%
+%   @arg List   List of atomic values to convert
+%   @arg Sep    Atom used as separator
+%   @arg Atom   The resulting atom with concatenated text
+concat_to_atom([A|As],Sep,Result):-
+    format(atom(First),'~k',[A]),
+    concat_to_atom(As,Sep,First,Result).
+concat_to_atom([],_,Result,Result).
+concat_to_atom([A|As],Sep,Current,Result):-
+    format(atom(Temp),'~w~w~k',[Current,Sep,A]),
+    concat_to_atom(As,Sep,Temp,Result).
