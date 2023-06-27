@@ -197,7 +197,7 @@ clause_sql(Clause,S^ST,F^FT,Where^WT,S^ST,F^FT,Where^NWT):-
 %
 %   :- args_sql(person,[id,name,age],[_,Name,16],Where).
 %   Name = 'person.name'
-%   Where = ['person.age' = 16]
+%   Where = ['person.age = 16']
 %   ~~~
 %
 %   @arg Table      Atomic table name
@@ -209,9 +209,10 @@ args_sql(Table,[Field|Fs],[Arg|As],Where):-
     var(Arg),
     atomic_list_concat([Table,'.',Field],Arg),!,
     args_sql(Table,Fs,As,Where).
-args_sql(Table,[F|Fs],[Arg|As],[Field=Arg|Where]):-
+args_sql(Table,[F|Fs],[Arg|As],[Field|Where]):-
     nonvar(Arg),
-    atomic_list_concat([Table,'.',F],Field),!,
+    atomic_list_concat([Table,'.',F],Fld),
+    format(atom(Field),'~w = ~k',[Fld,Arg]),!,
     args_sql(Table,Fs,As,Where).
 
 
