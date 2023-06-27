@@ -18,8 +18,8 @@ A lightweight Prolog to SQL SELECT translator.
 # Introduction
 This module is a minimal compiler of prolog query predicates to sql SELECT statements. I'm inspired by Draxler's work [1][], but I couldn't access his original paper, and it was too much work trying to use Mungall's implementation without much documentation. It seemed to me that it would be less work to implement a minimalist translator:
 
-* No aggregation (i.e. no min,max,sum,avg,count), also no sql HAVING 
-* No grouping or ordering
+* No aggregation (i.e. no min,max,sum,avg,count) 
+* No grouping or ordering, incl. no HAVING
 * Can use constraints like Age > 16, etc.
 * Can do "joins" through shared variable names between predicates
 * `member/2` translates to X IN List
@@ -32,7 +32,9 @@ The aim is that a "query predicate" (a prolog predicate intended to retrieve rec
 * field names are always translated with the table name as prefix. We also use this to determine if an atom in a constraint (e.g. `'mytable.person' = jones`) should be translated as a string (e.g. "jones"). This method is not perfect -- there could be atoms that contain full-stops (periods) that _should_ be translated as a string.  Therefore, the recommendation is to store string values as strings in Prolog.
 * TODO:
     - Add a utility to query BigQuery and load the results
-    - allow aggregate functions and create an aggregation predicate that processes them in for Prolog
+    - allow aggregate functions and create an aggregation predicate that processes them in for Prolog.
+      e.g. distinct(Arg), min(Arg),max(Arg),avg(Arg), group(Arg), order(Arg)
+    - sub-queries, possibly recognised with `sub` operator
 
 # Installation
 For the moment, just copy the file `src\prolog\pro2sql.pro`, or clone the git repo and copy it locally.
@@ -198,7 +200,7 @@ clauses_sql(Clause,S^ST,F^FT,W^WT,Select^NST,From^NFT,Where^NWT):-
 %   Select = ['people.name', 'people.age'|NST] .   
 %   ~~~
 %
-%   @arg Clause     The clause to be translated
+%   @arg Clause         The clause to be translated
 %   @arg S^ST           Initial difference list of arguments for the SELECT clause
 %   @arg F^FT           Initial difference list of arguments for the FROM clause
 %   @arg W^WT           Initial difference list of arguments for the WHERE clause
@@ -331,7 +333,7 @@ concat_to_atom([A|As],Sep,Current,Result):-
 %   :- person(ID,Name,Age).
 %   ID = 1
 %   Name = john
-%   Age = 13 .
+%   Age = 13 ...
 %   ~~~
 %
 %   @arg File       The csv file to load
