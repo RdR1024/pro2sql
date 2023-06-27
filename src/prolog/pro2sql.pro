@@ -3,11 +3,7 @@ module(pro2sql,[
     clauses_sql/7,
     clause_sql/7,
     args_sql/4,
-    pro2sql/2,
-    op(1100,xfy,or),
-    op(900,fy,not),
-    op(700,xfy,'<='),
-    op(700,xfy,'<>')
+    pro2sql/2
 ]).
 
 /** <module> Lightweight Prolog to SQL compiler
@@ -22,19 +18,14 @@ This module is a minimal compiler of prolog query predicates to sql SELECT state
 
 The aim is that a "query predicate" (a prolog predicate intended to retrieve records from fact predicates) works the same in prolog as its SQL translation works on SQL data -- except that SQL returns a table, where prolog returns variable result alternatives. The use case is where you want to grab an extract from a database through SQL and then further query it in Prolog.
 
+# Notes
+* field names are always translated with the table name as prefix. We also use this to determine if an atom in a constraint (e.g. `'mytable.person' = jones`) should be translated as a string (e.g. "jones"). This method is not perfect -- there could be atoms that contain full-stops (periods) that should be translated as string.  Therefore, the recommendation is to store string values as strings in Prolog.
+
 # References
 
 [1] "Draxler C (1992) Prolog to SQL Compiler, version 1.0. Technical report, CIS Centre for Information and Speech, University of Munich"
 
 **/
-
-%   Some operators to make translation easier.
-%   The clause_sql predicate first translates prolog constraints (e.g. X > Y) into clauses
-%   that use SQL operators. For that it helps if we define SQL operators, to keep infix notation.
-:- op(1100,xfy,or).
-:- op(900,fy,not).
-:- op(700,xfy,'<=').
-:- op(700,xfy,'<>').
 
 %%  table_def(+TableName,+FieldList,+Options) is multi.
 %   Defines the table name and field names of an SQL table. `TableName` should match
@@ -76,7 +67,7 @@ pro2sql(Head,SQL):-
     clauses_sql(Body,S1^ST,F^F,W^W,Sel^[],Fro^[],Whe^[]),
     atomic_list_concat(Sel,',',Select),
     atomic_list_concat(Fro,',',From),
-    atomic_list_concat(Whe,' and ',Where),
+    atomic_list_concat(Whe,' ',Where),
     format(atom(SQL),'SELECT ~w FROM ~w WHERE ~w',[Select,From,Where]).
 
 %%  head_to_sql(+Head,+S^ST,-Select^NST) is semidet.
@@ -125,11 +116,28 @@ head_sql(Head,Select^ST,Select^NST):-
 %   @arg Select^NST     Resulting diffence list of arguments for the SELECT clause
 %   @arg From^NFT       Resulting difference list of arguments for the FROM clause
 %   @arg Where^NWT      Resulting difference list of arguments for the WHERE clause
+
+%   Conjunctive body clauses
 clauses_sql((Clause,Cs),S^ST,F^FT,W^WT,Select^NST,From^NFT,Where^NWT):-
-    clause_sql(Clause,S^ST,F^FT,W^WT,S2^ST2,F2^FT2,W2^WT2),
-    clauses_sql(Cs,S2^ST2,F2^FT2,W2^WT2,Select^NST,From^NFT,Where^NWT).
+    clauses_sql(Clause,S^ST,F^FT,W^WT,S2^ST2,F2^FT2,W2^WT2),
+    ( WT == WT2 -> WT2a=WT2; append(['AND'],WT2a,WT2)),
+    clauses_sql(Cs,S2^ST2,F2^FT2,W2^WT2a,Select^NST,From^NFT,Where^NWT).
+
+%   Disjunctive body clauses
+clauses_sql((Clause;Cs),S^ST,F^FT,W^WT,Select^NST,From^NFT,Where^NWT):-
+    clauses_sql(Clause,S^ST,F^FT,W^WT,S2^ST2,F2^FT2,W2^WT2),
+    ( WT == WT2 -> WT2a=WT2; append(['OR'],WT2a,WT2)),
+    clauses_sql(Cs,S2^ST2,F2^FT2,W2^WT2a,Select^NST,From^NFT,Where^NWT).
+
+%   Negated body clause
+clauses_sql((\+ Clause),S^ST,F^FT,W^WT,Select^NST,From^NFT,Where^NWT):-
+    append(['NOT ('],WT2,WT),
+    clauses_sql(Clause,S^ST,F^FT,W^WT2,Select^NST,From^NFT,Where^WT2a),
+    append([')'],NWT,WT2a).
+
+%   Last clause
 clauses_sql(Clause,S^ST,F^FT,W^WT,Select^NST,From^NFT,Where^NWT):-
-    Clause \= (_,_),
+    Clause \= (_,_), Clause \= (_;_),
     clause_sql(Clause,S^ST,F^FT,W^WT,Select^NST,From^NFT,Where^NWT).
 
 
@@ -178,11 +186,12 @@ clause_sql(Clause,Select^ST,From^FT,Where^WT,Select^ST,From^NFT,Where^NWT):-
     ;   append(Wh,NWT,WT)
     ).
 
-%   A constraint clause. TODO: 'or' and 'not'
+%   A constraint clause.
 clause_sql(Clause,S^ST,F^FT,Where^WT,S^ST,F^FT,Where^NWT):-
     Clause =.. [Op,Arg1,Arg2],
     member(Op-Sop,['<'-'<','>'-'>','='-'=','=='-'=','>='-'>=','=<'-'<=','\\='-'<>']),
-    format(atom(NewClause),'~w ~w ~k',[Arg1,Sop,Arg2]),
+    ( (atom(Arg2),atomic_list_concat([Arg2],'.',Arg2)) -> atom_string(Arg2,A2); A2=Arg2),
+    format(atom(NewClause),'~w ~w ~k',[Arg1,Sop,A2]),
     append([NewClause],NWT,WT).
 
 %%  args_sql(+Table,+Fields,+Args,-Where) is semidet.
@@ -212,7 +221,8 @@ args_sql(Table,[Field|Fs],[Arg|As],Where):-
 args_sql(Table,[F|Fs],[Arg|As],[Field|Where]):-
     nonvar(Arg),
     atomic_list_concat([Table,'.',F],Fld),
-    format(atom(Field),'~w = ~k',[Fld,Arg]),!,
+    ( (atom(Arg),atomic_list_concat([Arg],'.',Arg)) -> atom_string(Arg,A); A=Arg),
+    format(atom(Field),'~w = ~k',[Fld,A]),!,
     args_sql(Table,Fs,As,Where).
 
 
