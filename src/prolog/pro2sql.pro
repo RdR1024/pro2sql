@@ -214,7 +214,7 @@ clause_sql(Clause,Select^ST,From^FT,Where^WT,Select^ST,From^NFT,Where^NWT):-
     ;   append(Wh,NWT,WT)
     ).
 
-%   membership constraint clause.
+%   membership constraint clause. ('IN' for SQL)
 clause_sql(Clause,S^ST,F^FT,Where^WT,S^ST,F^FT,Where^NWT):-
     Clause =.. [member,Arg1,Arg2],
     maplist(nondot_str,Arg2,Arg2s),
@@ -226,6 +226,13 @@ clause_sql(Clause,S^ST,F^FT,Where^WT,S^ST,F^FT,Where^NWT):-
 clause_sql(Clause,S^ST,F^FT,Where^WT,S^ST,F^FT,Where^NWT):-
     Clause =.. [between,Low,High,Value],
     format(atom(NewClause),'~w BETWEEN ~w AND ~w',[Value,Low,High]),
+    append([NewClause],NWT,WT).
+
+%   re_match constraint clause. ('LIKE' for SQL)
+clause_sql(Clause,S^ST,F^FT,Where^WT,S^ST,F^FT,Where^NWT):-
+    Clause =.. [re_match,Arg1,Arg2],
+    rematch_sql(A1,Arg1,_),
+    format(atom(NewClause),'~w LIKE ~w',[Arg2,A1]),
     append([NewClause],NWT,WT).
 
 %   A comparative constraint clause.
@@ -303,3 +310,21 @@ concat_to_atom([],_,Result,Result).
 concat_to_atom([A|As],Sep,Current,Result):-
     format(atom(Temp),'~w~w~k',[Current,Sep,A]),
     concat_to_atom(As,Sep,Temp,Result).
+
+%%  rematch_sql(+RegExp,-SQLexp) is semidet.
+%%  rematch_sql(-SQLexp,+RegExp,_) is semidet.
+%   Translate regular expression to SQL LIKE pattern.
+%   Note that only part of regex is translatable
+%
+%   Example
+%   ~~~
+%   :- rematch_sql(".*doe",SQL).
+%   SQL = '%doe'
+%
+%   :- rematch_sql("..%",SQL).
+%   SQL = '__^%\'ESCAPE\'^\''
+%   ~~~
+%
+%   @arg SQLexp     resulting SQL pattern as used in LIKE
+%   @arg RegExp     reqular expression pattern used in e.g. `re_match/2`
+%   @arg _          the remainder of the RegExp after processing (ignored)
