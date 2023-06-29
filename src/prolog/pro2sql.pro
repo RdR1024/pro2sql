@@ -109,7 +109,11 @@ The initial (empty) value when calling a predicate with difference lists is some
 ## References
 
 [1] "Draxler C (1992) Prolog to SQL Compiler, version 1.0. Technical report, CIS Centre for Information and Speech, University of Munich"
+
+## License
+
 **/
+
 :- use_module('./file_path_name_ext.pro').
 
 :- module_transparent 
@@ -395,7 +399,7 @@ clause_sql(_,Clause,S^ST,F^FT,Where^WT,S^ST,F^FT,Where^NWT):-
     nondot_str(Arg2,A2),
     format(atom(NewClause),'~w ~w ~k',[Arg1,Sop,A2]),
     WT = [NewClause|NWT].
-
+   
 
 
 %%  args_sql(+Table,+Fields,+Args,-Where) is semidet.
