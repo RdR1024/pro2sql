@@ -11,16 +11,19 @@
 %   Define a table and a query predicate
 %   These would be part of a normal prolog progam
 :- load_csv('people.csv',[functor(person),prefix(tiny),table(people),fields([id,name,age])]).
-:- [adults].
-:- [teens_noKaren].
+:- [test_queries].
 
 %  Test translation of queries
 test(adults,[nondet]):-
     pro2sql(adults(Name,Age),SQL),
+    Name = 'people.name',
+    Age = 'people.age',
     format(stdout,'~n~w~n',[SQL]).
 
 test(adults_noKaren,[nondet]):-
     pro2sql(adults_noKaren(Name,Age),SQL),
+    Name = 'people.name',
+    Age = 'people.age',
     format(stdout,'~n~w~n',[SQL]).
 
 :- end_tests(pro2sql).

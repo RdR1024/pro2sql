@@ -45,6 +45,11 @@ I will create a SWI-Prolog package when I've finished my current TODO list.
 
 [1] "Draxler C (1992) Prolog to SQL Compiler, version 1.0. Technical report, CIS Centre for Information and Speech, University of Munich"
 
+# Code Notes
+I use a lot of _difference lists_.  My preferred notation is `List^Tail`, where `List = [x1,x2,x3,...|Tail]`. In other words, the `^Tail` suffix simply provides a copy of the tail variable. For example I use `Select^ST` as the difference list for the SELECT clauses.  Typically, I use `xT` for the initial tail variabe (e.g. `ST`,`FT`,`WT` for the SELECT,FROM and WHERE tails respectively) and `NxT` for the "new" (after processing) tails.  
+
+The initial (empty) value when calling a predicate with difference lists is something like `S^S`. With difference lists, adding a new value happens like this: `ST = [NewValue|NST]`.  Here, the new value is made a list with the new tail and then the list is unified with the old tail.  Alternative, if we have a list of new values, `append(NewValues,NST,ST)` would do the same.
+
 **/
 :- use_module('./file_path_name_ext.pro').
 
@@ -119,18 +124,39 @@ pro2sql(Head,SQL):-
 %
 %   Example
 %   ~~~
-%   :- head_sql(name_age_query(Name,Age),S^S,Select^NST).
+%   :- head_sql(name_age_query(Name,Age),S^S,G^G,R^R,Select^NST,Group^NGT,Order^NRT).
 %   S=Select, Select = [Name,Age|NST]
+%
+%   :- head_sql(avg_age(Company,avg(Age)),S^S,G^G,R^R,Select^NST,Group^NGT,Order^R).
+%   S=Select, Select = [Company,avg(Age)]
+%   Group = [Company]
 %   ~~~
 %
-%   @arg Head   Prolog predicate that represents a query
-%   @arg S      The starting list of arguments
-%   @arg ST     The tail variable of F, used to append new arguments to
-%   @arg Select The resulting list of arguments
-%   @arg NST    The new tail variable of the resulting argument list
+%   @arg Head           Prolog predicate that represents a query
+%   @arg S^ST           Initial difference list of arguments for the SELECT clause
+%   @arg Select^NST     Resulting diffence list of arguments for the SELECT clause
 head_sql(Head,Select^ST,Select^NST):-
     Head =.. [_|Args],
     append(Args,NST,ST).
+
+%%  headargs_sql(+Args,S^ST,G^GT,R^RT,Select^NST,Group^NGT,Order^NRT) is semidet.
+%   Translates a list of predicate head arguments into clauses for SELECT,
+%   GROUP BY and ORDER BY.
+%   
+%   Argument types and translations:
+%   * Variable    - kept as is, and ultimately instantiated with the table.field name.
+%                   If an aggregate type (min,max,etc) is present elsewhere in the 
+%                   argument list, then the Variable is added to the Group list.
+%   * order(Var)  - Variable added to the Select list and to the Order list
+%                   If an aggregate type (min,max,etc) is present elsewhere in the 
+%                   argument list, then the Variable is added to the Group list.
+%   * group(Var)  - Var is added to the Select and Group list
+%   * Expr        - arithmetic expression, translated as `(Expr)`
+%   * min(Expr)   - translated as `MIN(`Expr`)`
+%   * max(Expr)   - translated as `MAX(`Expr`)`
+%   * count(Expr) - translated as `COUNT(`Expr`)`
+%   * sum(Expr)   - translated as `SUM(`Expr`)`
+%   * avg(Expr)   - translated as `AVG(`Expr`)`
 
 %%  clauses_sql(+Clauses,+S^ST,+F^FT,W^WT,Select^NST,From^NFT,Where^NWT) is semidet.
 %   Translates body clauses from a prolog query predicate into elements of an sql
@@ -162,20 +188,20 @@ head_sql(Head,Select^ST,Select^NST):-
 %   Conjunctive body clauses
 clauses_sql((Clause,Cs),S^ST,F^FT,W^WT,Select^NST,From^NFT,Where^NWT):-
     clauses_sql(Clause,S^ST,F^FT,W^WT,S2^ST2,F2^FT2,W2^WT2),
-    ( WT == WT2 -> WT2a=WT2; append(['AND'],WT2a,WT2)),
+    ( WT == WT2 -> WT2a=WT2; WT2=['AND'|WT2a]), 
     clauses_sql(Cs,S2^ST2,F2^FT2,W2^WT2a,Select^NST,From^NFT,Where^NWT).
 
 %   Disjunctive body clauses
 clauses_sql((Clause;Cs),S^ST,F^FT,W^WT,Select^NST,From^NFT,Where^NWT):-
     clauses_sql(Clause,S^ST,F^FT,W^WT,S2^ST2,F2^FT2,W2^WT2),
-    ( WT == WT2 -> WT2a=WT2; append(['OR'],WT2a,WT2)),
+    ( WT == WT2 -> WT2a=WT2; WT2=['OR'|WT2a]),   
     clauses_sql(Cs,S2^ST2,F2^FT2,W2^WT2a,Select^NST,From^NFT,Where^NWT).
 
 %   Negated body clause
 clauses_sql((\+ Clause),S^ST,F^FT,W^WT,Select^NST,From^NFT,Where^NWT):-
-    append(['NOT ('],WT2,WT),
+    WT = ['NOT ('|WT2],
     clauses_sql(Clause,S^ST,F^FT,W^WT2,Select^NST,From^NFT,Where^WT2a),
-    append([')'],NWT,WT2a).
+    WT2a = [')'|NWT].
 
 %   Last clause
 clauses_sql(Clause,S^ST,F^FT,W^WT,Select^NST,From^NFT,Where^NWT):-
@@ -216,7 +242,7 @@ clause_sql(Clause,Select^ST,From^FT,Where^WT,Select^ST,From^NFT,Where^NWT):-
     ( member(prefix(Pref),Options) -> true; Pref='' ),
     ( member(table(Tab),Options) -> true; Tab=Func),
     ( Pref = '' -> Table=Tab; atomic_list_concat([Pref,'.',Tab],Table)),
-    append([Table],NFT,FT),
+    FT = [Table|NFT],
     args_sql(Tab,Fields,Args,Wh),
     (   Wh=[] 
     ->  ( Where=Where, NWT=WT )
@@ -229,19 +255,19 @@ clause_sql(Clause,S^ST,F^FT,Where^WT,S^ST,F^FT,Where^NWT):-
     maplist(nondot_str,Arg2,Arg2s),
     concat_to_atom(Arg2s,',',A2),
     format(atom(NewClause),'~w IN (~w)',[Arg1,A2]),
-    append([NewClause],NWT,WT).
+    WT = [NewClause|NWT].
 
 %   between constraint clause.
 clause_sql(Clause,S^ST,F^FT,Where^WT,S^ST,F^FT,Where^NWT):-
     Clause =.. [between,Low,High,Value],
     format(atom(NewClause),'~w BETWEEN ~w AND ~w',[Value,Low,High]),
-    append([NewClause],NWT,WT).
+    WT = [NewClause|NWT].
 
 %   re_match constraint clause. 
 clause_sql(Clause,S^ST,F^FT,Where^WT,S^ST,F^FT,Where^NWT):-
     Clause =.. [re_match,Arg1,Arg2],
     format(atom(NewClause),'REGEXP-MATCH (~w, r\'~w\')',[Arg2,Arg1]),
-    append([NewClause],NWT,WT).
+    WT = [NewClause|NWT].
 
 %   A comparative constraint clause.
 clause_sql(Clause,S^ST,F^FT,Where^WT,S^ST,F^FT,Where^NWT):-
@@ -249,7 +275,12 @@ clause_sql(Clause,S^ST,F^FT,Where^WT,S^ST,F^FT,Where^NWT):-
     member(Op-Sop,['<'-'<','>'-'>','='-'=','=='-'=','>='-'>=','=<'-'<=','\\='-'<>']),
     nondot_str(Arg2,A2),
     format(atom(NewClause),'~w ~w ~k',[Arg1,Sop,A2]),
-    append([NewClause],NWT,WT).
+    WT = [NewClause|NWT].
+
+%   Other clauses get executed as Prolog during the translation process
+%   (acting as kind of macros during translation)
+clause_sql(Clause,S^ST,F^FT,W^WT,S^ST,F^FT,W^WT):-
+    call(Clause).
 
 %%  args_sql(+Table,+Fields,+Args,-Where) is semidet.
 %   Translate predicate arguments to sql field names, and/or WHERE field constraints.
@@ -349,7 +380,7 @@ load_csv(File,Options):-
     ;   (   length(Fields,N),
             retractall(table_def(Func,_,_)),
             abolish(Func/N),
-            assert(table_def(Func,Fields,DefOptions)),
+            assert(table_def(Func,Fields,DefOptions))
         )
     ),
     CSVops=[functor(Func),convert(true)],
