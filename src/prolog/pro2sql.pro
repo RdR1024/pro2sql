@@ -1,11 +1,12 @@
 :-module(pro2sql,[
-    head_sql/3,
-    headargs_sql/7,
+    head_sql/9,
+    headargs_sql/9,
     clauses_sql/7,
     clause_sql/7,
     args_sql/4,
     pro2sql/2,
     nondot_str/2,
+    concat_to_atom/2,
     concat_to_atom/3,
     load_csv/2
 ]).
@@ -19,13 +20,12 @@ A lightweight Prolog to SQL SELECT translator.
 # Introduction
 This module is a minimal compiler of prolog query predicates to sql SELECT statements. I'm inspired by Draxler's work [1][], but I couldn't access his original paper, and it was too much work trying to use Mungall's implementation without much documentation. It seemed to me that it would be less work to implement a minimalist translator:
 
-* No aggregation (i.e. no min,max,sum,avg,count) 
-* No grouping or ordering, incl. no HAVING
 * Can use constraints like Age > 16, etc.
 * Can do "joins" through shared variable names between predicates
 * `member/2` translates to X IN List
 * Can use SWI-Prolog `between/3`
 * No LIKE, but instead REGEXP_MATCH  (used in Google SQL)
+* GROUP BY automatically includes ORDER BY the same fields
 
 The aim is that a "query predicate" (a prolog predicate intended to retrieve records from fact predicates) works the same in prolog as in SQL -- except that SQL returns a table, where prolog returns variable result alternatives. The use case is where you want to extract from a database through SQL and then further query results table in Prolog.
 
@@ -33,8 +33,6 @@ The aim is that a "query predicate" (a prolog predicate intended to retrieve rec
 * field names are always translated with the table name as prefix. We also use this to determine if an atom in a constraint (e.g. `'mytable.person' = jones`) should be translated as a string (e.g. "jones"). This method is not perfect -- there could be atoms that contain full-stops (periods) that _should_ be translated as a string.  Therefore, the recommendation is to store string values as strings in Prolog.
 * TODO:
     - Add a utility to query BigQuery and load the results
-    - allow aggregate functions and create an aggregation predicate that processes them in for Prolog.
-      e.g. distinct(Arg), min(Arg),max(Arg),avg(Arg), group(Arg), order(Arg)
     - sub-queries, possibly recognised with `sub` operator
 
 # Installation
@@ -55,8 +53,8 @@ The initial (empty) value when calling a predicate with difference lists is some
 :- use_module('./file_path_name_ext.pro').
 
 :- module_transparent 
-    head_sql/3,
-    headargs_sql/7,
+    head_sql/9,
+    headargs_sql/9,
     clauses_sql/7,
     clause_sql/7,
     args_sql/4,
@@ -112,25 +110,33 @@ pro2sql(Head,SQL):-
     current_predicate(Func/N),
     context_module(M),
     M:clause(Head,Body),
-    head_sql(Head,S^S,S1^ST),
+    head_sql(Head,S^S,G^G,H^H,R^R,S1^ST,Gro^[],Hav^[],Ord^[]),
     clauses_sql(Body,S1^ST,F^F,W^W,Sel^[],Fro^[],Whe^[]),
-    atomic_list_concat(Sel,',',Select),
-    atomic_list_concat(Fro,',',From),
-    ( Whe=[] ->  Where=''; atomic_list_concat(['WHERE'|Whe],' ',Where) ),
-    
-    format(atom(SQL),'SELECT ~w FROM ~w ~w',[Select,From,Where]).
+    concat_to_atom(Sel,',',Select),
+    concat_to_atom(Fro,',',From),
+    ( Whe=[] ->  Where=''; concat_to_atom([' WHERE'|Whe],' ',Where) ),
+    ( Gro=[] -> Group=''; concat_to_atom(Gro,',',Grou), format(atom(Group),' GROUP BY ~w',[Grou])),
+    ( Hav=[] -> Having=''; concat_to_atom(Hav,',',Havi), format(atom(Group),' HAVING ~w',[Havi])),
+    ( Ord=[] -> Order=''; concat_to_atom(Ord,',',Orde), format(atom(Order),' ORDER BY ~w',[Orde])),
+    format(atom(SQL),'SELECT ~w FROM ~w~w~w~w~w',[Select,From,Where,Group,Having,Order]).
 
 %%  head_to_sql(+Head,+S^ST,-Select^NST) is semidet.
 %   Takes the head of a prolog query predicate and extracts its arguments
 %   into a difference list that will ultimately become the contents of the
 %   sql SELECT clause.
 %
+%   The arguments in the head of the prolog query predicate may contain aggregation
+%   functions, for example `company_age(group(Company), avg(Age))`.  These aggregation
+%   functions will translate to SQL, but won't _do_ anything in Prolog when the 
+%   predicate is used directly. One would need to run the predicate through a special
+%   "aggregation" predicate to get the same results that SQL would give.
+%
 %   Example
 %   ~~~
 %   :- head_sql(name_age_query(Name,Age),S^S,G^G,R^R,Select^NST,Group^NGT,Order^NRT).
 %   S=Select, Select = [Name,Age|NST]
 %
-%   :- head_sql(avg_age(Company,avg(Age)),S^S,G^G,R^R,Select^NST,Group^NGT,Order^R).
+%   :- head_sql(company_age(group(Company),avg(Age)),S^S,G^G,R^R,Select^NST,Group^NGT,Order^R).
 %   S=Select, Select = [Company,avg(Age)]
 %   Group = [Company]
 %   ~~~
@@ -138,9 +144,10 @@ pro2sql(Head,SQL):-
 %   @arg Head           Prolog predicate that represents a query
 %   @arg S^ST           Initial difference list of arguments for the SELECT clause
 %   @arg Select^NST     Resulting diffence list of arguments for the SELECT clause
-head_sql(Head,Select^ST,Select^NST):-
+head_sql(Head,S^ST,G^GT,H^HT,R^RT,S^NST,G^NGT,H^NHT,R^NRT):-
     Head =.. [_|Args],
-    append(Args,NST,ST).
+    headargs_sql(Args,S^ST,G^GT,H^HT,R^RT,S^NST,G^NGT,H^NHT,R^NRT).
+%    append(Args,NST,ST).
 
 %%  headargs_sql(+Args,S^ST,G^GT,H^HT,R^RT,Select^NST,Group^NGT,Having^NHT,Order^NRT) is semidet.
 %   Translates a list of predicate head arguments into clauses for SELECT,
@@ -176,14 +183,19 @@ head_sql(Head,Select^ST,Select^NST):-
 %   @arg R^RT       Initial difference list of arguments for the ORDER clause
 %   @arg Order^NRT  Resulting diffence list of arguments for the ORDER clause
 headargs_sql([],S^ST,G^GT,H^HT,R^RT,S^ST,G^GT,H^HT,R^RT).
+headargs_sql([A|Args],S^ST,G^GT,H^HT,R^RT,S^NST,G^NGT,H^NHT,R^NRT):-
+    var(A),
+    ST = [A|ST2],!,
+    headargs_sql(Args,S^ST2,G^GT,H^HT,R^RT,S^NST,G^NGT,H^NHT,R^NRT).
 headargs_sql([order(Expr)|Args],S^ST,G^GT,H^HT,R^RT,S^NST,G^NGT,H^NHT,R^NRT):-
     ST = [Expr|ST2],
     RT = [Expr|RT2],!,
     headargs_sql(Args,S^ST2,G^GT,H^HT,R^RT2,S^NST,G^NGT,H^NHT,R^NRT).
 headargs_sql([group(Expr)|Args],S^ST,G^GT,H^HT,R^RT,S^NST,G^NGT,H^NHT,R^NRT):-
     ST = [Expr|ST2],
-    GT = [Expr|GT2],!,
-    headargs_sql(Args,S^ST2,G^GT2,H^HT,R^RT,S^NST,G^NGT,H^NHT,R^NRT).
+    GT = [Expr|GT2],
+    RT = [Expr|RT2],!,
+    headargs_sql(Args,S^ST2,G^GT2,H^HT,R^RT2,S^NST,G^NGT,H^NHT,R^NRT).
 headargs_sql([having(Expr)|Args],S^ST,G^GT,H^HT,R^RT,S^NST,G^NGT,H^NHT,R^NRT):-
     HT = [Expr|HT2],!,
     headargs_sql(Args,S^ST,G^GT,H^HT2,R^RT,S^NST,G^NGT,H^NHT,R^NRT).
@@ -284,7 +296,7 @@ clause_sql(Clause,Select^ST,From^FT,Where^WT,Select^ST,From^NFT,Where^NWT):-
     M:table_def(Func,Fields,Options),
     ( member(prefix(Pref),Options) -> true; Pref='' ),
     ( member(table(Tab),Options) -> true; Tab=Func),
-    ( Pref = '' -> Table=Tab; atomic_list_concat([Pref,'.',Tab],Table)),
+    ( Pref = '' -> Table=Tab; concat_to_atom([Pref,'.',Tab],Table)),
     FT = [Table|NFT],
     args_sql(Tab,Fields,Args,Wh),
     (   Wh=[] 
@@ -314,7 +326,7 @@ clause_sql(Clause,S^ST,F^FT,Where^WT,S^ST,F^FT,Where^NWT):-
 
 %   A comparative constraint clause.
 clause_sql(Clause,S^ST,F^FT,Where^WT,S^ST,F^FT,Where^NWT):-
-    Clause =.. [Op,Arg1,Arg2], Op\=member, Op\=between,
+    Clause =.. [Op,Arg1,Arg2],
     member(Op-Sop,['<'-'<','>'-'>','='-'=','=='-'=','>='-'>=','=<'-'<=','\\='-'<>']),
     nondot_str(Arg2,A2),
     format(atom(NewClause),'~w ~w ~k',[Arg1,Sop,A2]),
@@ -352,7 +364,8 @@ args_sql(Table,[F|Fs],[Arg|As],[Field|Where]):-
     nonvar(Arg),
     atomic_list_concat([Table,'.',F],Fld),
     nondot_str(Arg,A),
-    format(atom(Field),'~w = ~k',[Fld,A]),!,
+    (atom(A)->T='~w = ~w';T='~w = ~k'),
+    format(atom(Field),T,[Fld,A]),!,
     args_sql(Table,Fs,As,Where).
 
 
@@ -367,13 +380,15 @@ args_sql(Table,[F|Fs],[Arg|As],[Field|Where]):-
 %   @arg Atom       the atom value
 %   @arg Convert    the resulting atom or string
 nondot_str(Atom,Convert):-
-    ( (atom(Atom),(Atom\=null,Atom\='NULL'),atomic_list_concat([Atom],'.',Atom)) 
+    ( (atom(Atom),(Atom\=null,Atom\='NULL'),atomic_list_concat(L,'.',Atom),L=[Atom]) 
     -> atom_string(Atom,Convert)
     ; Convert=Atom
     ).
 
+%%  concat_to_atom(+List,-Atom) is semidet.
 %%  concat_to_atom(+List,+Sep,-Atom) is semidet.
-%   Like `atomic_list_concat/3` but strings retain quotes.
+%   Like `atomic_list_concat/3` but strings retain quotes and 
+%   compound terms are converted to atoms
 %
 %   Example
 %   ~~~
@@ -384,12 +399,15 @@ nondot_str(Atom,Convert):-
 %   @arg List   List of atomic values to convert
 %   @arg Sep    Atom used as separator
 %   @arg Atom   The resulting atom with concatenated text
+concat_to_atom(List,Atom):- concat_to_atom(List,'',Atom).
 concat_to_atom([A|As],Sep,Result):-
-    format(atom(First),'~k',[A]),
+    (string(A)->T='~k';T='~w'),
+    format(atom(First),T,[A]),
     concat_to_atom(As,Sep,First,Result).
 concat_to_atom([],_,Result,Result).
 concat_to_atom([A|As],Sep,Current,Result):-
-    format(atom(Temp),'~w~w~k',[Current,Sep,A]),
+    (string(A)->T='~w~w~k';T='~w~w~w'),
+    format(atom(Temp),T,[Current,Sep,A]),
     concat_to_atom(As,Sep,Temp,Result).
 
 %%  load_csv(+File,+Options) is semidet.
