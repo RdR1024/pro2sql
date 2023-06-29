@@ -31,8 +31,13 @@ The aim is that a "query predicate" (a prolog predicate intended to retrieve rec
 
 # Notes
 * field names are always translated with the table name as prefix. We also use this to determine if an atom in a constraint (e.g. `'mytable.person' = jones`) should be translated as a string (e.g. "jones"). This method is not perfect -- there could be atoms that contain full-stops (periods) that _should_ be translated as a string.  Therefore, the recommendation is to store string values as strings in Prolog.
-* TODO:
+* The arguments in the head of the prolog query predicate may contain aggregation functions, for example `company_age(group(Company), avg(Age))`.  These aggregation functions will translate to SQL, but won't _do_ anything in Prolog when the 
+  predicate is used directly. One would need to run the predicate through a special "aggregation" predicate to get the same results that SQL would give.
+
+# TODO:
     - Add a utility to query BigQuery and load the results
+    - DISTINCT
+    - ALL (probably use notnull(...) )
     - sub-queries, possibly recognised with `sub` operator
 
 # Installation
@@ -45,9 +50,9 @@ I will create a SWI-Prolog package when I've finished my current TODO list.
 [1] "Draxler C (1992) Prolog to SQL Compiler, version 1.0. Technical report, CIS Centre for Information and Speech, University of Munich"
 
 # Code Notes
-I use a lot of _difference lists_.  My preferred notation is `List^Tail`, where `List = [x1,x2,x3,...|Tail]`. In other words, the `^Tail` suffix simply provides a copy of the tail variable. For example I use `Select^ST` as the difference list for the SELECT clauses.  Typically, I use `xT` for the initial tail variabe (e.g. `ST`,`FT`,`WT` for the SELECT,FROM and WHERE tails respectively) and `NxT` for the "new" (after processing) tails.  
+I use a lot of _difference lists_.  My preferred notation is `List^Tail`, where `List = [x1,x2,x3,...|Tail]`. In other words, the `^Tail` suffix simply provides another copy of the tail variable. For example I use `Select^ST` as the difference list for the SELECT clauses.  Typically, I use `xT` for the initial tail variabe (e.g. `ST`,`FT`,`WT` for the SELECT,FROM and WHERE tails respectively) and `NxT` for the "new" (after processing) tails.  
 
-The initial (empty) value when calling a predicate with difference lists is something like `S^S`. With difference lists, adding a new value happens like this: `ST = [NewValue|NST]`.  Here, the new value is made a list with the new tail and then the list is unified with the old tail.  Alternative, if we have a list of new values, `append(NewValues,NST,ST)` would do the same.
+The initial (empty) value when calling a predicate with difference lists is something like `S^S`. With difference lists, adding a new value happens like this: `ST = [NewValue|NST]`.  Here, the new value is made into a list with the new tail and then that list is unified with the old tail.  Alternative, if we have a list of new values, `append(NewValues,NST,ST)` would do the same.
 
 **/
 :- use_module('./file_path_name_ext.pro').
@@ -72,7 +77,8 @@ The initial (empty) value when calling a predicate with difference lists is some
 %   `table-tablename`.
 %
 %   Example. Note: we're using `assert` here from the prolog prompt, but `table_def/3` can 
-%   be asserted from a prolog file like any other predicate.
+%   be asserted from a prolog file like any other predicate.  Also, `load_csv/2` will
+%   automatically create a `table_dev/3`.
 %   ~~~
 %   :- assert(table_def(person,[id,name,age],[prefix(tiny),table(people)])).
 %   ~~~
@@ -124,12 +130,6 @@ pro2sql(Head,SQL):-
 %   Takes the head of a prolog query predicate and extracts its arguments
 %   into a difference list that will ultimately become the contents of the
 %   sql SELECT clause.
-%
-%   The arguments in the head of the prolog query predicate may contain aggregation
-%   functions, for example `company_age(group(Company), avg(Age))`.  These aggregation
-%   functions will translate to SQL, but won't _do_ anything in Prolog when the 
-%   predicate is used directly. One would need to run the predicate through a special
-%   "aggregation" predicate to get the same results that SQL would give.
 %
 %   Example
 %   ~~~
@@ -424,7 +424,7 @@ concat_to_atom([A|As],Sep,Current,Result):-
 %   :- person(ID,Name,Age).
 %   ID = 1
 %   Name = john
-%   Age = 13 ...
+%   Age = 13 ;...
 %   ~~~
 %
 %   @arg File       The csv file to load

@@ -14,3 +14,6 @@ adults_noKaren(Name,Age):-
 company_age(group(Company),avg(Age)):-
     person(_,Name,Age),
     employee(Name,Company).
+
+from_dog_years(Name,Age*7):-
+    person(_,Name,Age).

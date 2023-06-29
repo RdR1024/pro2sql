@@ -21,15 +21,18 @@ test(adults,[nondet]):-
     format(stdout,'~n~w~n',[SQL]).
 
 test(adults_noKaren,[nondet]):-
-    pro2sql(adults_noKaren(Name,Age),SQL),
+    pro2sql(adults_noKaren(_Name,_Age),SQL),
     SQL = 'SELECT people.name,people.age FROM tiny.people WHERE people.age BETWEEN 21 AND 100 AND NOT ( people.name IN ("karen","sheila") )',
-    Name = 'people.name',
-    Age = 'people.age',
     format(stdout,'~n~w~n',[SQL]).
 
 test(company_age,[nondet]):-
     pro2sql(company_age(group(_Company),avg(_Age)),SQL),
     SQL = 'SELECT employee.company,avg(people.age) FROM tiny.people,tiny.employee WHERE employee.name = people.name GROUP BY employee.company ORDER BY employee.company',
-    format(stdout,'~n~w~n',[SQL]).    
+    format(stdout,'~n~w~n',[SQL]).
+
+test(from_dog_years,[nondet]):-
+    pro2sql(from_dog_years(_Name,_Age*7),SQL),
+    SQL='SELECT people.name,people.age*7 FROM tiny.people',
+    format(stdout,'~n~w~n',[SQL]).
 
 :- end_tests(pro2sql).
