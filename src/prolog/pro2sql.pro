@@ -8,7 +8,10 @@
     nondot_str/2,
     concat_to_atom/2,
     concat_to_atom/3,
-    load_csv/3
+    load_csv/3,
+    bq/5,
+    op(800,fy,distinct),
+    op(800,fy,all)
 ]).
 
 /** <module> Lightweight Prolog to SQL compiler
@@ -18,27 +21,30 @@
 A lightweight Prolog to SQL SELECT translator.
 
 # Introduction
-This module is a minimal compiler of prolog query predicates to sql SELECT statements. I'm inspired by Draxler's work [1][], but I couldn't access his original paper, and it was too much work trying to use Mungall's implementation without much documentation. It seemed to me that it would be less work to implement a minimalist translator:
+This module is a minimal compiler of prolog "query predicates" to sql SELECT statements. I'm inspired by Draxler's work [1][], but I couldn't access his original paper, and it was too much work trying to use Mungall's implementation without much documentation. It seemed to me that it would be less work to implement a minimalist translator:
 
+* Only implements translation to SELECT... 
+* No subqueries, because those are typically handled differently in Prolog
 * Can use constraints like Age > 16, etc.
 * Can do "joins" through shared variable names between predicates
 * `member/2` translates to X IN List
-* Can use SWI-Prolog `between/3`
+* Automatically translates SWI-Prolog `between/3`
 * No LIKE, but instead REGEXP_MATCH  (used in Google SQL)
-* GROUP BY automatically includes ORDER BY the same fields
 
-The aim is that a "query predicate" (a prolog predicate intended to retrieve records from fact predicates) works the same in prolog as in SQL -- except that SQL returns a table, where prolog returns variable result alternatives. The use case is where you want to extract from a database through SQL and then further query results table in Prolog.
+The aim is that a "query predicate" (a prolog predicate intended to retrieve records from fact predicates) works the same in prolog as in SQL -- except that SQL returns a table, where prolog returns variable result alternatives. 
+
+The use case is where you want to extract from a database through SQL and then further query the results in Prolog.
 
 # Notes
 * field names are always translated with the table name as prefix. We also use this to determine if an atom in a constraint (e.g. `'mytable.person' = jones`) should be translated as a string (e.g. "jones"). This method is not perfect -- there could be atoms that contain full-stops (periods) that _should_ be translated as a string.  Therefore, the recommendation is to store string values as strings in Prolog.
 * The arguments in the head of the prolog query predicate may contain aggregation functions, for example `company_age(group(Company), avg(Age))`.  These aggregation functions will translate to SQL, but won't _do_ anything in Prolog when the 
-  predicate is used directly. One would need to run the predicate through a special "aggregation" predicate to get the same results that SQL would give.
+  query predicate is used directly. One would need to run the query predicate through a special "aggregation" predicate to get the same results that SQL would give.
 
 # TODO:
-    - Add a utility to query BigQuery and load the results
-    - DISTINCT
-    - ALL (probably use notnull(...) )
-    - sub-queries, possibly recognised with `sub` operator
+    - need a `memberd/2` for difference lists
+    - remove this: GROUP BY automatically includes ORDER BY the same fields
+    - an aggregation predicate on the Prolog side, which would handle aggregation functions in the query predicate
+    - maybe sub-queries, possibly recognised with `sub` predicate on the Prolog side
 
 # Installation
 For the moment, just copy the file `src\prolog\pro2sql.pro`, or clone the git repo and copy it locally.
@@ -66,9 +72,11 @@ The initial (empty) value when calling a predicate with difference lists is some
     pro2sql/2,
     nondot_str/2,
     concat_to_atom/3,
-    load_csv/3.
+    load_csv/3,
+    bq/5.
 
-
+:- op(800,fy,distinct).
+:- op(800,fy,all).
 
 %%  table_def(+TableName,+FieldList,+Options) is multi.
 %   Defines the table name and field names of an SQL table. `TableName` should match
@@ -147,7 +155,6 @@ pro2sql(Head,SQL):-
 head_sql(Head,S^ST,G^GT,H^HT,R^RT,S^NST,G^NGT,H^NHT,R^NRT):-
     Head =.. [_|Args],
     headargs_sql(Args,S^ST,G^GT,H^HT,R^RT,S^NST,G^NGT,H^NHT,R^NRT).
-%    append(Args,NST,ST).
 
 %%  headargs_sql(+Args,S^ST,G^GT,H^HT,R^RT,Select^NST,Group^NGT,Having^NHT,Order^NRT) is semidet.
 %   Translates a list of predicate head arguments into clauses for SELECT,
@@ -489,12 +496,15 @@ load_csv_rows(_,_,_):-!.
 %   we'll replace that with direct calls to the BQ REST API.
 %
 %   Options:
-%   * (none) reserved for future changes
+%   * table(T)      - 'T' is the table name (as used for SQL). This option is passed on to `table_def/3`.
+%   * prefix(P)     - 'P' is a atom that will be used as a prefix for the table (as used in the SQL FROM clause). This option is passed on to `table_def/3`.
+%   * nodef         - option to omit creation of a `table_def/3` table definition (i.e. not an SQL table import)
+%   * headings(true)- true (default) means the csv has a headings (i.e. column names) row. This option is passed to `load_csv/3`
 %
 %   Example
 %   ~~~
 %   :- [test_queries].
-%   :- bq(adults(_Name,_Age),result_adults,Status,[]).
+%   :- bq(adults(_,_),result_adults,[name,age],Status,[]).
 %   Status = 0 .
 %   :- result_adults(Name,Age).
 %   Name = jane,
@@ -504,4 +514,14 @@ load_csv_rows(_,_,_):-!.
 %   @arg QueryPred  The prolog query predicate
 %   @arg Func       The functor of the result predicates
 %   @arg Status     0=successful, 1=error (error text in the results file Func.csv)
+%   @arg Fields     Integer indicating number of result fields (columns), or a list of column headers
 %   @arg Opts       Options
+bq(Pred,Func,Fields,Status,Opts):-
+    pro2sql(Pred,SQL),
+    format(atom(File),'~w.csv',[Func]),
+    format(atom(Command),'bq query --format=csv \'~w\' > ~w',[SQL,File]),
+    shell(Command,Status),
+    (   Status==0
+    ->  load_csv(File,Fields,Opts)
+    ;   true
+    ),!.
