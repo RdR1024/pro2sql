@@ -1,5 +1,6 @@
 :-module(pro2sql,[
     head_sql/3,
+    headargs_sql/7,
     clauses_sql/7,
     clause_sql/7,
     args_sql/4,
@@ -55,6 +56,7 @@ The initial (empty) value when calling a predicate with difference lists is some
 
 :- module_transparent 
     head_sql/3,
+    headargs_sql/7,
     clauses_sql/7,
     clause_sql/7,
     args_sql/4,
@@ -114,8 +116,9 @@ pro2sql(Head,SQL):-
     clauses_sql(Body,S1^ST,F^F,W^W,Sel^[],Fro^[],Whe^[]),
     atomic_list_concat(Sel,',',Select),
     atomic_list_concat(Fro,',',From),
-    atomic_list_concat(Whe,' ',Where),
-    format(atom(SQL),'SELECT ~w FROM ~w WHERE ~w',[Select,From,Where]).
+    ( Whe=[] ->  Where=''; atomic_list_concat(['WHERE'|Whe],' ',Where) ),
+    
+    format(atom(SQL),'SELECT ~w FROM ~w ~w',[Select,From,Where]).
 
 %%  head_to_sql(+Head,+S^ST,-Select^NST) is semidet.
 %   Takes the head of a prolog query predicate and extracts its arguments
@@ -139,24 +142,64 @@ head_sql(Head,Select^ST,Select^NST):-
     Head =.. [_|Args],
     append(Args,NST,ST).
 
-%%  headargs_sql(+Args,S^ST,G^GT,R^RT,Select^NST,Group^NGT,Order^NRT) is semidet.
+%%  headargs_sql(+Args,S^ST,G^GT,H^HT,R^RT,Select^NST,Group^NGT,Having^NHT,Order^NRT) is semidet.
 %   Translates a list of predicate head arguments into clauses for SELECT,
 %   GROUP BY and ORDER BY.
 %   
 %   Argument types and translations:
-%   * Variable    - kept as is, and ultimately instantiated with the table.field name.
-%                   If an aggregate type (min,max,etc) is present elsewhere in the 
-%                   argument list, then the Variable is added to the Group list.
-%   * order(Var)  - Variable added to the Select list and to the Order list
-%                   If an aggregate type (min,max,etc) is present elsewhere in the 
-%                   argument list, then the Variable is added to the Group list.
-%   * group(Var)  - Var is added to the Select and Group list
-%   * Expr        - arithmetic expression, translated as `(Expr)`
-%   * min(Expr)   - translated as `MIN(`Expr`)`
-%   * max(Expr)   - translated as `MAX(`Expr`)`
-%   * count(Expr) - translated as `COUNT(`Expr`)`
-%   * sum(Expr)   - translated as `SUM(`Expr`)`
-%   * avg(Expr)   - translated as `AVG(`Expr`)`
+%   * order(Expr)   - (Expr) added to the Select list and to the Order list.
+%   * group(Var)    - Var is added to the Select and Group list
+%   * having(Expr)  - (Expr) is added to the Having list
+%   * min(Expr)     - translated as min(Expr)
+%   * max(Expr)     - translated as max(Expr)
+%   * count(Expr)   - translated as count(Expr)
+%   * sum(Expr)     - translated as sum(Expr)
+%   * avg(Expr)     - translated as avg(Expr)
+%   * Variable      - kept as is, and ultimately instantiated with the table.field name.
+%   * Expr          - arithmetic expression, translated as `(Expr)`
+%
+%   Example
+%   ~~~
+%   :- headargs_sql([group(Company),avg(Age)],S^S,G^G,R^R,Select^NST,Group^NGT,Order^NRT).
+%   S=Select, Select=[Company,avg(Age)|NST]
+%   G=Group, Group=[Company|NGT]
+%   R=Order, Order=NRT
+%   ~~~
+%
+%   @arg Args       List of arguments from the head of a query predicate
+%   @arg S^ST       Initial difference list of arguments for the SELECT clause
+%   @arg Select^NST Resulting diffence list of arguments for the SELECT clause
+%   @arg G^GT       Initial difference list of arguments for the GROUP clause
+%   @arg Group^NGT  Resulting diffence list of arguments for the GROUP clause
+%   @arg H^HT       Initial difference list of arguments for the HAVING clause
+%   @arg Having^NHT Resulting diffence list of arguments for the HAVING clause
+%   @arg R^RT       Initial difference list of arguments for the ORDER clause
+%   @arg Order^NRT  Resulting diffence list of arguments for the ORDER clause
+headargs_sql([],S^ST,G^GT,H^HT,R^RT,S^ST,G^GT,H^HT,R^RT).
+headargs_sql([order(Expr)|Args],S^ST,G^GT,H^HT,R^RT,S^NST,G^NGT,H^NHT,R^NRT):-
+    ST = [Expr|ST2],
+    RT = [Expr|RT2],!,
+    headargs_sql(Args,S^ST2,G^GT,H^HT,R^RT2,S^NST,G^NGT,H^NHT,R^NRT).
+headargs_sql([group(Expr)|Args],S^ST,G^GT,H^HT,R^RT,S^NST,G^NGT,H^NHT,R^NRT):-
+    ST = [Expr|ST2],
+    GT = [Expr|GT2],!,
+    headargs_sql(Args,S^ST2,G^GT2,H^HT,R^RT,S^NST,G^NGT,H^NHT,R^NRT).
+headargs_sql([having(Expr)|Args],S^ST,G^GT,H^HT,R^RT,S^NST,G^NGT,H^NHT,R^NRT):-
+    HT = [Expr|HT2],!,
+    headargs_sql(Args,S^ST,G^GT,H^HT2,R^RT,S^NST,G^NGT,H^NHT,R^NRT).
+headargs_sql([F|Args],S^ST,G^GT,H^HT,R^RT,S^NST,G^NGT,H^NHT,R^NRT):-
+    compound(F),
+    F =.. [Func,_Expr],
+    (   member(Func,[min,max,count,sum,avg])
+    ->  ST = [F|ST2]
+    ;   ST = [(F)|ST2]
+    ),!,
+    headargs_sql(Args,S^ST2,G^GT,H^HT,R^RT,S^NST,G^NGT,H^NHT,R^NRT).
+headargs_sql([A|Args],S^ST,G^GT,H^HT,R^RT,S^NST,G^NGT,H^NHT,R^NRT):-
+    ST = [A|ST2],!,
+    headargs_sql(Args,S^ST2,G^GT,H^HT,R^RT,S^NST,G^NGT,H^NHT,R^NRT).
+
+
 
 %%  clauses_sql(+Clauses,+S^ST,+F^FT,W^WT,Select^NST,From^NFT,Where^NWT) is semidet.
 %   Translates body clauses from a prolog query predicate into elements of an sql
@@ -277,10 +320,9 @@ clause_sql(Clause,S^ST,F^FT,Where^WT,S^ST,F^FT,Where^NWT):-
     format(atom(NewClause),'~w ~w ~k',[Arg1,Sop,A2]),
     WT = [NewClause|NWT].
 
-%   Other clauses get executed as Prolog during the translation process
-%   (acting as kind of macros during translation)
-clause_sql(Clause,S^ST,F^FT,W^WT,S^ST,F^FT,W^WT):-
-    call(Clause).
+%   TODO: handle sub(Goal) as a clause for subqueries (and is simply `call`ed in Prolog)
+
+
 
 %%  args_sql(+Table,+Fields,+Args,-Where) is semidet.
 %   Translate predicate arguments to sql field names, and/or WHERE field constraints.
