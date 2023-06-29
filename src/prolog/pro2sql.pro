@@ -8,7 +8,7 @@
     nondot_str/2,
     concat_to_atom/2,
     concat_to_atom/3,
-    load_csv/2
+    load_csv/3
 ]).
 
 /** <module> Lightweight Prolog to SQL compiler
@@ -66,7 +66,7 @@ The initial (empty) value when calling a predicate with difference lists is some
     pro2sql/2,
     nondot_str/2,
     concat_to_atom/3,
-    load_csv/2.
+    load_csv/3.
 
 
 
@@ -74,7 +74,7 @@ The initial (empty) value when calling a predicate with difference lists is some
 %   Defines the table name and field names of an SQL table. `TableName` should match
 %   the functor (predicate name) of the prolog predicate that represents the table.
 %   If the actual table or view has a different name, this can be given as the option
-%   `table-tablename`.
+%   `table(tablename)`.
 %
 %   Example. Note: we're using `assert` here from the prolog prompt, but `table_def/3` can 
 %   be asserted from a prolog file like any other predicate.  Also, `load_csv/2` will
@@ -410,13 +410,20 @@ concat_to_atom([A|As],Sep,Current,Result):-
     format(atom(Temp),T,[Current,Sep,A]),
     concat_to_atom(As,Sep,Temp,Result).
 
-%%  load_csv(+File,+Options) is semidet.
+%%  load_csv(+File,+Fields,+Options) is semidet.
 %   Load the contents of a headerless csv file into the prolog database
 %   as clauses of the functor specified in `Options`.
 %
+%   Options:
+%   * functor(F)    - `F` is an atom that will be used as the predicate name for the rows read into the Prolog database
+%   * table(T)      - 'T' is the table name (as used for SQL). This option is passed on to `table_def/3`.
+%   * prefix(P)     - 'P' is a atom that will be used as a prefix for the table (as used in the SQL FROM clause). This option is passed on to `table_def/3`.
+%   * nodef         - option to omit creation of a `table_def/3` table definition (i.e. not an SQL table import)
+%   * headings(true)- true (default) means the csv has a headings (i.e. column names) row
+%
 %   Example (assumes existence of a file `people.csv`)
 %   ~~~
-%   :- load_csv('people.csv',[functor(person),prefix(tiny),table(people),fields([id,name,age])]).
+%   :- load_csv('people.csv',3,[functor(person),prefix(tiny),table(people)]).
 %   :- table_def(person,Fields,Options).
 %   Fields = [id,name,age]
 %   Options = [prefix(tiny),table(people)] .
@@ -428,24 +435,38 @@ concat_to_atom([A|As],Sep,Current,Result):-
 %   ~~~
 %
 %   @arg File       The csv file to load
+%   @arg Fields     List of atom field names. If Fields is an Integer, it specifies 
+%                   the number of csv columns and the field names may be read from first row of csv.
 %   @arg Options    Options that control the fact predicates loaded into Prolog
-load_csv(File,Options):-
+load_csv(File,Fs,Options):-
     file_path_name_ext(File,_,FName,_),
     (member(functor(Func),Options) -> true; Func=FName),
+    (integer(Fs) -> (N=Fs,Fields=[]); (Fields=Fs,length(Fields,N))),
     (member(table(Table),Options) -> D1=[table(Table)]; D1=[]),
     (member(prefix(Prefix),Options) -> DefOptions=[prefix(Prefix)|D1]; DefOptions=D1),
-    (member(fields(Fields),Options) -> true; Fields = []),
     (member(nodef,Options)
     ->  true
-    ;   (   length(Fields,N),
-            retractall(table_def(Func,_,_)),
-            abolish(Func/N),
+    ;   (   retractall(table_def(Func,_,_)),
             assert(table_def(Func,Fields,DefOptions))
         )
     ),
+    abolish(Func/N),
     CSVops=[functor(Func),convert(true)],
     context_module(M),
-    load_csv_rows(M,File,CSVops),!.
+    load_csv_rows(M,File,CSVops),!,
+    ( member(headings(false),Options)
+    ->  true
+    ;   (   functor(H,Func,N),
+            H =.. [_|Headers],
+            once(retract(H)),
+            (   Fields=[]
+            ->  ( retractall(table_def(Func,_,_)),
+                  assert(table_def(Func,Headers,DefOptions))
+                )
+            ;   true
+            )
+        )
+    ).
 
 %%  load_csv(+File,+Options) is semidet.
 %   Fail loop to load rows of csv file into the prolog database.
@@ -456,3 +477,24 @@ load_csv_rows(M,Input,CSVOps):-
     (Row=end_of_file -> true; M:assertz(Row)),
     fail.
 load_csv_rows(_,_,_):-!.
+
+%%  bq(+QueryPred,+Func,-Status,+Opts) is semidet.
+%   Query the Google BigQuery database by translating the Prolog 
+%   predicate `QueryPred` into SQL and sending it to BigQuery.
+%   Results are automatically loaded into Prolog as fact predicates
+%   `Func/N`.
+%
+%   Example
+%   ~~~
+%   :- [test_queries].
+%   :- bq(adults(_Name,_Age),result_adults,Status,[]).
+%   Status = 0 .
+%   :- result_adults(Name,Age).
+%   Name = jane,
+%   Age = 22 ; ...
+%   ~~~
+%
+%   @arg QueryPred  The prolog query predicate
+%   @arg Func       The functor of the result predicates
+%   @arg Status     0=successful, 1=error (error text in results file Func.csv)
+%   @arg Opts       Options

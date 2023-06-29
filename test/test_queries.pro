@@ -1,6 +1,6 @@
 % test queries
-:- load_csv('employee.csv',[prefix(tiny),fields([name,company])]).
-:- load_csv('people.csv',[functor(person),prefix(tiny),table(people),fields([id,name,age])]).
+:- load_csv('employee.csv',2,[prefix(tiny)]).
+:- load_csv('people.csv',3,[functor(person),prefix(tiny),table(people)]).
 
 adults(Name,Age):-
     person(_,Name,Age),
