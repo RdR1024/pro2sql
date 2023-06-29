@@ -484,6 +484,13 @@ load_csv_rows(_,_,_):-!.
 %   Results are automatically loaded into Prolog as fact predicates
 %   `Func/N`.
 %
+%   Notes: at the moment this is coded with the assumption that 
+%   BigQuery's CLI utility is installed (i.e. `bq`).  At some point
+%   we'll replace that with direct calls to the BQ REST API.
+%
+%   Options:
+%   * (none) reserved for future changes
+%
 %   Example
 %   ~~~
 %   :- [test_queries].
@@ -496,5 +503,5 @@ load_csv_rows(_,_,_):-!.
 %
 %   @arg QueryPred  The prolog query predicate
 %   @arg Func       The functor of the result predicates
-%   @arg Status     0=successful, 1=error (error text in results file Func.csv)
+%   @arg Status     0=successful, 1=error (error text in the results file Func.csv)
 %   @arg Opts       Options
