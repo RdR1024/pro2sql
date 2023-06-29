@@ -1,82 +1,136 @@
 :-module(pro2sql,[
     head_sql/9,
     headargs_sql/9,
-    clauses_sql/7,
-    clause_sql/7,
+    clauses_sql/8,
+    clause_sql/8,
     args_sql/4,
     pro2sql/2,
+    pro2sql/3,
     nondot_str/2,
     concat_to_atom/2,
     concat_to_atom/3,
+    member_dif/2,
     load_csv/3,
-    bq/5,
+    load_csv/4,
+    bq/4,
     op(800,fy,distinct),
     op(800,fy,all)
 ]).
 
 /** <module> Lightweight Prolog to SQL compiler
-
 # pro2sql
 
 A lightweight Prolog to SQL SELECT translator.
 
-# Introduction
+## Introduction
 This module is a minimal compiler of prolog "query predicates" to sql SELECT statements. I'm inspired by Draxler's work [1][], but I couldn't access his original paper, and it was too much work trying to use Mungall's implementation without much documentation. It seemed to me that it would be less work to implement a minimalist translator:
 
-* Only implements translation to SELECT... 
-* No subqueries, because those are typically handled differently in Prolog
-* Can use constraints like Age > 16, etc.
-* Can do "joins" through shared variable names between predicates
-* `member/2` translates to X IN List
+* Automatically translates constraints like Age > 16, etc.
+* Autmatically translates `member/2` translates to `... IN List`
 * Automatically translates SWI-Prolog `between/3`
-* No LIKE, but instead REGEXP_MATCH  (used in Google SQL)
+* Does "joins" through shared variable names between predicates
+* No LIKE, but instead REGEXP_CONTAINS (used in Google SQL). Configurable for other SQLs with `set_flag(regexp,Template)`.
+* Only implements translation to SELECT...  (no UPDATE, etc.)
+* No subqueries. Generate subqueries as result tables first and then use as joins.
+* Includes a simple utility predicate that will translate a prolog query predicate, send it to Google BigQuery, and load the
+  results as fact predicates.
 
-The aim is that a "query predicate" (a prolog predicate intended to retrieve records from fact predicates) works the same in prolog as in SQL -- except that SQL returns a table, where prolog returns variable result alternatives. 
+The aim is that a "query predicate" (a prolog predicate intended to retrieve results from fact predicates) works the same in prolog as in SQL -- except that SQL returns a table, where prolog returns variable result alternatives. 
 
 The use case is where you want to extract from a database through SQL and then further query the results in Prolog.
 
-# Notes
-* field names are always translated with the table name as prefix. We also use this to determine if an atom in a constraint (e.g. `'mytable.person' = jones`) should be translated as a string (e.g. "jones"). This method is not perfect -- there could be atoms that contain full-stops (periods) that _should_ be translated as a string.  Therefore, the recommendation is to store string values as strings in Prolog.
-* The arguments in the head of the prolog query predicate may contain aggregation functions, for example `company_age(group(Company), avg(Age))`.  These aggregation functions will translate to SQL, but won't _do_ anything in Prolog when the 
-  query predicate is used directly. One would need to run the query predicate through a special "aggregation" predicate to get the same results that SQL would give.
+## Installation
+In SWI-Prolog, `package_install(pro2sql).`
 
-# TODO:
-    - need a `memberd/2` for difference lists
-    - remove this: GROUP BY automatically includes ORDER BY the same fields
-    - an aggregation predicate on the Prolog side, which would handle aggregation functions in the query predicate
-    - maybe sub-queries, possibly recognised with `sub` predicate on the Prolog side
+Otherwise, clone the git repository, and copy the files from `...pro2sql/src/prolog/`
 
-# Installation
-For the moment, just copy the file `src\prolog\pro2sql.pro`, or clone the git repo and copy it locally.
+## Usage
 
-I will create a SWI-Prolog package when I've finished my current TODO list.
+Let's assume that you have an SQL table called `person` with fields `id,name,age`.  In Prolog, assert the following table definition predicate:
 
-# References
+~~~
+:- assert(table_def(person,[id,name,age],[prefix(mydataset)])).
+~~~
 
-[1] "Draxler C (1992) Prolog to SQL Compiler, version 1.0. Technical report, CIS Centre for Information and Speech, University of Munich"
+Let's also assume that you have also have a predicate that would list all people with age >= 21.
 
-# Code Notes
+~~~
+adult(Name,Age):- person(_,_,Age), Age >= 21.
+~~~
+
+This query predicate is stock-standard Prolog. And if you had fact predicates for `person/3` then the query predicate would simply give you all the names and ages of people over 21.  However, let's say that the data is not in Prolog, but in the SQL database. You can translate that predicate into an SQL query like this:
+
+~~~
+:- pro2sql(adult(Name,Age),SQL).
+Name = person.name
+Age = person.age
+SQL = 'SELECT person.name, person.age FROM mydataset.person WHERE person.age >= 21'
+~~~
+
+And you can run this query on Google's BigQuery like this (assuming you have an account and that the `person` table is available in the `mydataset` dataset):
+
+~~~
+:- bq(adult(Name,Age),[name,age],Status,[]).
+~~~
+
+By default, the results become available in Prolog as `adult_result(Name,Age)` (same predicate name as the query, but with `_result` suffix).  The results also exist in a downloaded `.csv` table, with the column headings given in the second argument of `bq/4`.
+
+~~~
+:- adult_result(Name,Age).
+Name = john
+Age = 23 ; ...
+~~~
+
+
+For more examples, see the code comments and also `test_queries.pro` in the test folder of the repository. The `bq/4` predicate currently uses BigQuery commandline utility (bq).  I intend to write an BiqQuery API interface for Prolog at some time in the future.  In the meantime, I have also left some notes on BigQuery bq in the `.../doc` folder.
+
+## Status
+
+This code is currently `alpha`.
+
+All requirements for now are implemented, and it seems to be working with a small set of tests.  However, I want to test it more comprehensively before calling it `beta`.
+
+
+## Notes
+* field names are always translated with the table name as prefix. We also use this to determine if an atom 
+  in a constraint (e.g. `'mytable.person' = jones`) should be translated as a string (e.g. "jones"). This method is not perfect -- there could be atoms that contain full-stops (periods) that _should_ be translated as a string.  Therefore, the recommendation is to store string values as strings in Prolog.
+* The arguments in the head of the prolog query predicate may contain aggregation functions, for example 
+  `company_age(group(Company), avg(Age))`.  These aggregation functions will translate to SQL and work fine. 
+  But if you use the predicate directly in Prolog, the aggregation function won't do anything. Rather, to get the same results as SQL, but in Prolog, you would have to run the query predicate through an aggregate predicate (like the `aggregate/3` from `library(aggregate)`.
+
+  For example, assume that you have a query predicate `tonnage(sum(Weight)):- package(_,_,Weight)`.  In Prolog, you could get
+  the same results as SQL, by applying `aggregate/3` -- that is, `aggregate(sum(Weight),tonnage(sum(Weight)),Total)`.
+
+## Code Notes
 I use a lot of _difference lists_.  My preferred notation is `List^Tail`, where `List = [x1,x2,x3,...|Tail]`. In other words, the `^Tail` suffix simply provides another copy of the tail variable. For example I use `Select^ST` as the difference list for the SELECT clauses.  Typically, I use `xT` for the initial tail variabe (e.g. `ST`,`FT`,`WT` for the SELECT,FROM and WHERE tails respectively) and `NxT` for the "new" (after processing) tails.  
 
 The initial (empty) value when calling a predicate with difference lists is something like `S^S`. With difference lists, adding a new value happens like this: `ST = [NewValue|NST]`.  Here, the new value is made into a list with the new tail and then that list is unified with the old tail.  Alternative, if we have a list of new values, `append(NewValues,NST,ST)` would do the same.
 
+## References
+
+[1] "Draxler C (1992) Prolog to SQL Compiler, version 1.0. Technical report, CIS Centre for Information and Speech, University of Munich"
 **/
 :- use_module('./file_path_name_ext.pro').
 
 :- module_transparent 
     head_sql/9,
     headargs_sql/9,
-    clauses_sql/7,
-    clause_sql/7,
+    clauses_sql/8,
+    clause_sql/8,
     args_sql/4,
     pro2sql/2,
+    pro2sql/3,
     nondot_str/2,
+    concat_to_atom/2,
     concat_to_atom/3,
+    member_dif/2,
     load_csv/3,
-    bq/5.
+    load_csv/4,
+    bq/4.
 
 :- op(800,fy,distinct).
 :- op(800,fy,all).
+:- set_flag(regexp,'REGEXP_CONTAINS (~w, r\'~w\')').
 
 %%  table_def(+TableName,+FieldList,+Options) is multi.
 %   Defines the table name and field names of an SQL table. `TableName` should match
@@ -119,13 +173,15 @@ The initial (empty) value when calling a predicate with difference lists is some
 %   @arg Head   Predicate head clause of the predicate to translate into SQL
 %   @arg SQL    Resulting SQL text
 pro2sql(Head,SQL):-
+    context_module(CM),
+    pro2sql(CM,Head,SQL).
+pro2sql(CM,Head,SQL):-
     Head =.. [Func|Args],
     length(Args,N),
     current_predicate(Func/N),
-    context_module(M),
-    M:clause(Head,Body),
+    CM:clause(Head,Body),
     head_sql(Head,S^S,G^G,H^H,R^R,S1^ST,Gro^[],Hav^[],Ord^[]),
-    clauses_sql(Body,S1^ST,F^F,W^W,Sel^[],Fro^[],Whe^[]),
+    clauses_sql(CM,Body,S1^ST,F^F,W^W,Sel^[],Fro^[],Whe^[]),
     concat_to_atom(Sel,',',Select),
     concat_to_atom(Fro,',',From),
     ( Whe=[] ->  Where=''; concat_to_atom([' WHERE'|Whe],' ',Where) ),
@@ -195,14 +251,13 @@ headargs_sql([A|Args],S^ST,G^GT,H^HT,R^RT,S^NST,G^NGT,H^NHT,R^NRT):-
     ST = [A|ST2],!,
     headargs_sql(Args,S^ST2,G^GT,H^HT,R^RT,S^NST,G^NGT,H^NHT,R^NRT).
 headargs_sql([order(Expr)|Args],S^ST,G^GT,H^HT,R^RT,S^NST,G^NGT,H^NHT,R^NRT):-
-    ST = [Expr|ST2],
+    (member_dif(Expr,S^ST) -> ST=ST2; ST = [Expr|ST2]),
     RT = [Expr|RT2],!,
     headargs_sql(Args,S^ST2,G^GT,H^HT,R^RT2,S^NST,G^NGT,H^NHT,R^NRT).
 headargs_sql([group(Expr)|Args],S^ST,G^GT,H^HT,R^RT,S^NST,G^NGT,H^NHT,R^NRT):-
-    ST = [Expr|ST2],
-    GT = [Expr|GT2],
-    RT = [Expr|RT2],!,
-    headargs_sql(Args,S^ST2,G^GT2,H^HT,R^RT2,S^NST,G^NGT,H^NHT,R^NRT).
+    (member_dif(Expr,S^ST) -> ST=ST2; ST = [Expr|ST2]),
+    GT = [Expr|GT2],!,
+    headargs_sql(Args,S^ST2,G^GT2,H^HT,R^RT,S^NST,G^NGT,H^NHT,R^NRT).
 headargs_sql([having(Expr)|Args],S^ST,G^GT,H^HT,R^RT,S^NST,G^NGT,H^NHT,R^NRT):-
     HT = [Expr|HT2],!,
     headargs_sql(Args,S^ST,G^GT,H^HT2,R^RT,S^NST,G^NGT,H^NHT,R^NRT).
@@ -239,6 +294,7 @@ headargs_sql([A|Args],S^ST,G^GT,H^HT,R^RT,S^NST,G^NGT,H^NHT,R^NRT):-
 %   Select = ['people.name', 'people.age'|NST] .
 %   ~~~
 %
+%   @arg M              Context Module
 %   @arg Clauses        Conjunction of body clauses
 %   @arg S^ST           Initial difference list of arguments for the SELECT clause
 %   @arg F^FT           Initial difference list of arguments for the FROM clause
@@ -248,30 +304,30 @@ headargs_sql([A|Args],S^ST,G^GT,H^HT,R^RT,S^NST,G^NGT,H^NHT,R^NRT):-
 %   @arg Where^NWT      Resulting difference list of arguments for the WHERE clause
 
 %   Conjunctive body clauses
-clauses_sql((Clause,Cs),S^ST,F^FT,W^WT,Select^NST,From^NFT,Where^NWT):-
-    clauses_sql(Clause,S^ST,F^FT,W^WT,S2^ST2,F2^FT2,W2^WT2),
+clauses_sql(CM,(Clause,Cs),S^ST,F^FT,W^WT,Select^NST,From^NFT,Where^NWT):-
+    clauses_sql(CM,Clause,S^ST,F^FT,W^WT,S2^ST2,F2^FT2,W2^WT2),
     ( WT == WT2 -> WT2a=WT2; WT2=['AND'|WT2a]), 
-    clauses_sql(Cs,S2^ST2,F2^FT2,W2^WT2a,Select^NST,From^NFT,Where^NWT).
+    clauses_sql(CM,Cs,S2^ST2,F2^FT2,W2^WT2a,Select^NST,From^NFT,Where^NWT).
 
 %   Disjunctive body clauses
-clauses_sql((Clause;Cs),S^ST,F^FT,W^WT,Select^NST,From^NFT,Where^NWT):-
-    clauses_sql(Clause,S^ST,F^FT,W^WT,S2^ST2,F2^FT2,W2^WT2),
+clauses_sql(CM,(Clause;Cs),S^ST,F^FT,W^WT,Select^NST,From^NFT,Where^NWT):-
+    clauses_sql(CM,Clause,S^ST,F^FT,W^WT,S2^ST2,F2^FT2,W2^WT2),
     ( WT == WT2 -> WT2a=WT2; WT2=['OR'|WT2a]),   
-    clauses_sql(Cs,S2^ST2,F2^FT2,W2^WT2a,Select^NST,From^NFT,Where^NWT).
+    clauses_sql(CM,Cs,S2^ST2,F2^FT2,W2^WT2a,Select^NST,From^NFT,Where^NWT).
 
 %   Negated body clause
-clauses_sql((\+ Clause),S^ST,F^FT,W^WT,Select^NST,From^NFT,Where^NWT):-
+clauses_sql(CM,(\+ Clause),S^ST,F^FT,W^WT,Select^NST,From^NFT,Where^NWT):-
     WT = ['NOT ('|WT2],
-    clauses_sql(Clause,S^ST,F^FT,W^WT2,Select^NST,From^NFT,Where^WT2a),
+    clauses_sql(CM,Clause,S^ST,F^FT,W^WT2,Select^NST,From^NFT,Where^WT2a),
     WT2a = [')'|NWT].
 
 %   Last clause
-clauses_sql(Clause,S^ST,F^FT,W^WT,Select^NST,From^NFT,Where^NWT):-
+clauses_sql(CM,Clause,S^ST,F^FT,W^WT,Select^NST,From^NFT,Where^NWT):-
     Clause \= (_,_), Clause \= (_;_),
-    clause_sql(Clause,S^ST,F^FT,W^WT,Select^NST,From^NFT,Where^NWT).
+    clause_sql(CM,Clause,S^ST,F^FT,W^WT,Select^NST,From^NFT,Where^NWT).
 
 
-%%  clause_sql(+Clause,+S^ST,+F^FT,W^WT,Select^NST,From^NFT,Where^NWT) is semidet.
+%%  clause_sql(CM,+Clause,+S^ST,+F^FT,W^WT,Select^NST,From^NFT,Where^NWT) is semidet.
 %   Translates a body clause from a prolog query predicate into elements of an sql
 %   SELECT, FROM, and WHERE clause.
 %
@@ -288,6 +344,7 @@ clauses_sql(Clause,S^ST,F^FT,W^WT,Select^NST,From^NFT,Where^NWT):-
 %   Select = ['people.name', 'people.age'|NST] .   
 %   ~~~
 %
+%   @arg M              Context Module
 %   @arg Clause         The clause to be translated
 %   @arg S^ST           Initial difference list of arguments for the SELECT clause
 %   @arg F^FT           Initial difference list of arguments for the FROM clause
@@ -297,10 +354,9 @@ clauses_sql(Clause,S^ST,F^FT,W^WT,Select^NST,From^NFT,Where^NWT):-
 %   @arg Where^NWT      Resulting difference list of arguments for the WHERE clause
 
 %   A simple predicate clause, where the predicate functor is defined as a table
-clause_sql(Clause,Select^ST,From^FT,Where^WT,Select^ST,From^NFT,Where^NWT):-
+clause_sql(CM,Clause,Select^ST,From^FT,Where^WT,Select^ST,From^NFT,Where^NWT):-
     Clause =.. [Func|Args],
-    context_module(M),
-    M:table_def(Func,Fields,Options),
+    CM:table_def(Func,Fields,Options),
     ( member(prefix(Pref),Options) -> true; Pref='' ),
     ( member(table(Tab),Options) -> true; Tab=Func),
     ( Pref = '' -> Table=Tab; concat_to_atom([Pref,'.',Tab],Table)),
@@ -312,7 +368,7 @@ clause_sql(Clause,Select^ST,From^FT,Where^WT,Select^ST,From^NFT,Where^NWT):-
     ).
 
 %   membership constraint clause. ('IN' for SQL)
-clause_sql(Clause,S^ST,F^FT,Where^WT,S^ST,F^FT,Where^NWT):-
+clause_sql(_,Clause,S^ST,F^FT,Where^WT,S^ST,F^FT,Where^NWT):-
     Clause =.. [member,Arg1,Arg2],
     maplist(nondot_str,Arg2,Arg2s),
     concat_to_atom(Arg2s,',',A2),
@@ -320,26 +376,25 @@ clause_sql(Clause,S^ST,F^FT,Where^WT,S^ST,F^FT,Where^NWT):-
     WT = [NewClause|NWT].
 
 %   between constraint clause.
-clause_sql(Clause,S^ST,F^FT,Where^WT,S^ST,F^FT,Where^NWT):-
+clause_sql(_,Clause,S^ST,F^FT,Where^WT,S^ST,F^FT,Where^NWT):-
     Clause =.. [between,Low,High,Value],
     format(atom(NewClause),'~w BETWEEN ~w AND ~w',[Value,Low,High]),
     WT = [NewClause|NWT].
 
 %   re_match constraint clause. 
-clause_sql(Clause,S^ST,F^FT,Where^WT,S^ST,F^FT,Where^NWT):-
+clause_sql(_,Clause,S^ST,F^FT,Where^WT,S^ST,F^FT,Where^NWT):-
     Clause =.. [re_match,Arg1,Arg2],
-    format(atom(NewClause),'REGEXP-MATCH (~w, r\'~w\')',[Arg2,Arg1]),
+    get_flag(regexp,RegexpTemplate),
+    format(atom(NewClause),RegexpTemplate,[Arg2,Arg1]),
     WT = [NewClause|NWT].
 
 %   A comparative constraint clause.
-clause_sql(Clause,S^ST,F^FT,Where^WT,S^ST,F^FT,Where^NWT):-
+clause_sql(_,Clause,S^ST,F^FT,Where^WT,S^ST,F^FT,Where^NWT):-
     Clause =.. [Op,Arg1,Arg2],
     member(Op-Sop,['<'-'<','>'-'>','='-'=','=='-'=','>='-'>=','=<'-'<=','\\='-'<>']),
     nondot_str(Arg2,A2),
     format(atom(NewClause),'~w ~w ~k',[Arg1,Sop,A2]),
     WT = [NewClause|NWT].
-
-%   TODO: handle sub(Goal) as a clause for subqueries (and is simply `call`ed in Prolog)
 
 
 
@@ -417,6 +472,22 @@ concat_to_atom([A|As],Sep,Current,Result):-
     format(atom(Temp),T,[Current,Sep,A]),
     concat_to_atom(As,Sep,Temp,Result).
 
+
+%%  member_dif(+Item,+List^T) is semidet.
+%   Check if `Item` is a member of a difference list.
+%
+%   Example
+%   ~~~
+%   :- member(c,[a,b,c,d|T]^T).
+%   true.
+%   ~~~
+%
+%   @arg Item   The term to check against `List`
+%   @arg List^T The difference list
+member_dif(_,Xs^T):-Xs==T,!,fail.
+member_dif(Item,[X|Xs]^T):-
+    (Item=X -> true; member_dif(Item,Xs^T)).
+
 %%  load_csv(+File,+Fields,+Options) is semidet.
 %   Load the contents of a headerless csv file into the prolog database
 %   as clauses of the functor specified in `Options`.
@@ -446,6 +517,9 @@ concat_to_atom([A|As],Sep,Current,Result):-
 %                   the number of csv columns and the field names may be read from first row of csv.
 %   @arg Options    Options that control the fact predicates loaded into Prolog
 load_csv(File,Fs,Options):-
+    context_module(CM),
+    load_csv(CM,File,Fs,Options).
+load_csv(CM,File,Fs,Options):-
     file_path_name_ext(File,_,FName,_),
     (member(functor(Func),Options) -> true; Func=FName),
     (integer(Fs) -> (N=Fs,Fields=[]); (Fields=Fs,length(Fields,N))),
@@ -453,22 +527,21 @@ load_csv(File,Fs,Options):-
     (member(prefix(Prefix),Options) -> DefOptions=[prefix(Prefix)|D1]; DefOptions=D1),
     (member(nodef,Options)
     ->  true
-    ;   (   retractall(table_def(Func,_,_)),
-            assert(table_def(Func,Fields,DefOptions))
+    ;   (   CM:retractall(table_def(Func,_,_)),
+            CM:assert(table_def(Func,Fields,DefOptions))
         )
     ),
-    abolish(Func/N),
+    CM:abolish(Func/N),
     CSVops=[functor(Func),convert(true)],
-    context_module(M),
-    load_csv_rows(M,File,CSVops),!,
+    load_csv_rows(CM,File,CSVops),!,
     ( member(headings(false),Options)
     ->  true
     ;   (   functor(H,Func,N),
             H =.. [_|Headers],
-            once(retract(H)),
+            once(CM:retract(H)),
             (   Fields=[]
-            ->  ( retractall(table_def(Func,_,_)),
-                  assert(table_def(Func,Headers,DefOptions))
+            ->  ( CM:retractall(table_def(Func,_,_)),
+                  CM:assert(table_def(Func,Headers,DefOptions))
                 )
             ;   true
             )
@@ -479,17 +552,19 @@ load_csv(File,Fs,Options):-
 %   Fail loop to load rows of csv file into the prolog database.
 %   For use with `load_csv/2`.
 
-load_csv_rows(M,Input,CSVOps):-
+load_csv_rows(CM,Input,CSVOps):-
     csv_read_file_row(Input,Row,CSVOps),
-    (Row=end_of_file -> true; M:assertz(Row)),
+    (Row=end_of_file -> true; CM:assertz(Row)),
     fail.
 load_csv_rows(_,_,_):-!.
 
-%%  bq(+QueryPred,+Func,-Status,+Opts) is semidet.
+%%  bq(+QueryPred,+Fields,-Status,+Opts) is semidet.
 %   Query the Google BigQuery database by translating the Prolog 
 %   predicate `QueryPred` into SQL and sending it to BigQuery.
 %   Results are automatically loaded into Prolog as fact predicates
-%   `Func/N`.
+%   `Func/N` from Opts `functor(Func)`.  If no functor is given in `Opts`
+%   the `<pred>_result` convention is used, where `<pred>` is the functor
+%   of the `QueryPred`.
 %
 %   Notes: at the moment this is coded with the assumption that 
 %   BigQuery's CLI utility is installed (i.e. `bq`).  At some point
@@ -497,31 +572,33 @@ load_csv_rows(_,_,_):-!.
 %
 %   Options:
 %   * table(T)      - 'T' is the table name (as used for SQL). This option is passed on to `table_def/3`.
-%   * prefix(P)     - 'P' is a atom that will be used as a prefix for the table (as used in the SQL FROM clause). This option is passed on to `table_def/3`.
+%   * prefix(P)     - 'P' is a atom that will be used as a prefix for the table (as used in the SQL FROM clause).
+%                     This option is passed on to `table_def/3`.
 %   * nodef         - option to omit creation of a `table_def/3` table definition (i.e. not an SQL table import)
 %   * headings(true)- true (default) means the csv has a headings (i.e. column names) row. This option is passed to `load_csv/3`
 %
 %   Example
 %   ~~~
 %   :- [test_queries].
-%   :- bq(adults(_,_),result_adults,[name,age],Status,[]).
+%   :- bq(adults(_,_),[name,age],Status,[]).
 %   Status = 0 .
-%   :- result_adults(Name,Age).
+%   :- adults_result(Name,Age).
 %   Name = jane,
 %   Age = 22 ; ...
 %   ~~~
 %
 %   @arg QueryPred  The prolog query predicate
-%   @arg Func       The functor of the result predicates
 %   @arg Status     0=successful, 1=error (error text in the results file Func.csv)
 %   @arg Fields     Integer indicating number of result fields (columns), or a list of column headers
 %   @arg Opts       Options
-bq(Pred,Func,Fields,Status,Opts):-
-    pro2sql(Pred,SQL),
+bq(Pred,Fields,Status,Opts):-
+    context_module(CM),
+    pro2sql(CM,Pred,SQL),
+    ( member(functor(Func),Opts) -> true; (Pred=..[F|_], atom_concat(F,'_result',Func)) ),
     format(atom(File),'~w.csv',[Func]),
-    format(atom(Command),'bq query --format=csv \'~w\' > ~w',[SQL,File]),
+    format(atom(Command),'bq query --format=csv "~w" > ~w',[SQL,File]),
     shell(Command,Status),
     (   Status==0
-    ->  load_csv(File,Fields,Opts)
+    ->  load_csv(CM,File,Fields,Opts)
     ;   true
     ),!.

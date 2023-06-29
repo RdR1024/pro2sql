@@ -19,8 +19,15 @@ You should be able to use the command `bq` from your commandline to query.
 ~~~
 bq make tiny
 bq load --autodetect tiny.people people.csv
+bq load --skip_leading_rows=1 tiny.employee employee.csv name:string,company:string
+~~~
+
+# To remove a table
 
 ~~~
+bq rm -t tiny.people
+~~~
+
 
 ## Get the list of columns from a table
 
