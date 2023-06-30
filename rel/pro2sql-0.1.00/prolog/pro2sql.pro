@@ -179,7 +179,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 :-  dynamic table_def/3.
 :-  multifile table_def/3.
 
-%%  pro2sql(+Head,-SQL):-
+%%  pro2sql(+Head,-SQL) is semidet.
 %   Translate a prolog predicate to an sql SELECT statement.
 %
 %   Example
@@ -527,6 +527,7 @@ member_dif(Item,[X|Xs]^T):-
 %   * nodef         - option to omit creation of a `table_def/3` table definition (i.e. not an SQL table import)
 %   * headings(true)- true (default) means the csv has a headings (i.e. column names) row
 %
+%
 %   Example (assumes existence of a file `people.csv`)
 %   ~~~
 %   :- load_csv('people.csv',3,[functor(person),prefix(tiny),table(people)]).
@@ -540,10 +541,11 @@ member_dif(Item,[X|Xs]^T):-
 %   Age = 13 ;...
 %   ~~~
 %
+%
 %   @arg File       The csv file to load
-%   @arg Fields     List of atom field names. If Fields is an Integer, it specifies 
-%                   the number of csv columns and the field names may be read from first row of csv.
+%   @arg Fields     List of atom field names. If Fields is an Integer, it specifies the number of csv columns and the field names may be read from first row of csv.
 %   @arg Options    Options that control the fact predicates loaded into Prolog
+%
 load_csv(File,Fs,Options):-
     context_module(CM),
     load_csv(CM,File,Fs,Options).
